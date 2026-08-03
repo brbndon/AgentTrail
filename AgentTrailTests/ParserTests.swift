@@ -632,6 +632,40 @@ final class ParserTests: XCTestCase {
         }
     }
 
+    func testDiscoverAndParseReportsProgressForEachAgentPhase() async throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let directories = AgentDirectories(homeDirectory: root)
+        for directory in directories.defaultWatchPaths {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
+        try #"{"type":"message","role":"user","content":"Hello"}"#
+            .write(to: directories.codexSessions.appendingPathComponent("session.jsonl"), atomically: true, encoding: .utf8)
+
+        let store = PayloadStore(rootURL: root.appendingPathComponent("Blobs"))
+        let service = IngestionService(directories: directories, payloadStore: store)
+        let collector = ProgressCollector()
+        let report = try await service.discoverAndParse { progress in
+            await collector.record(progress)
+        }
+        let phases = await collector.phases
+        let sawCodexParse = await collector.sawCodexParse
+        XCTAssertFalse(phases.isEmpty)
+        XCTAssertTrue(phases.contains(.scanning))
+        XCTAssertTrue(phases.contains(.parsing))
+        XCTAssertTrue(sawCodexParse)
+        XCTAssertEqual(report.sessions.count, 1)
+        XCTAssertTrue(IngestionProgress(
+            phase: .parsing,
+            agentType: .codex,
+            processed: 2,
+            total: 10,
+            sessionsImported: 1,
+            failures: 0,
+            currentName: "session.jsonl"
+        ).userFacingMessage.contains("2 of 10"))
+    }
+
     func testSignedExitCodesArePreserved() async throws {
         let root = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -698,5 +732,17 @@ final class ParserTests: XCTestCase {
             semaphore.signal()
         }
         _ = semaphore.wait(timeout: .now() + 2)
+    }
+}
+
+private actor ProgressCollector {
+    private(set) var phases: [IngestionProgress.Phase] = []
+    private(set) var sawCodexParse = false
+
+    func record(_ progress: IngestionProgress) {
+        phases.append(progress.phase)
+        if progress.agentType == .codex, progress.phase == .parsing, progress.total >= 1 {
+            sawCodexParse = true
+        }
     }
 }

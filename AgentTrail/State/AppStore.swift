@@ -10,6 +10,8 @@ final class AppStore {
     var isLoading = false
     var lastRefreshDate: Date?
     var statusMessage: String
+    /// Latest discovery/parse progress while `isLoading` (nil when idle).
+    private(set) var ingestionProgress: IngestionProgress?
     /// Sticky message after degraded durable storage (emergency or backup recovery);
     /// not cleared by refresh, branch create, or status updates.
     private(set) var persistenceWarning: String?
@@ -29,6 +31,7 @@ final class AppStore {
     private var refreshRequestedWhileLoading = false
     private var refreshGeneration: UInt64 = 0
     private var watchToken: UUID?
+    private var lastProgressPublish: ContinuousClock.Instant?
     private let logger = Logger(subsystem: "com.brandon.AgentTrail", category: "app")
 
     init(
@@ -58,14 +61,27 @@ final class AppStore {
     /// Re-scans all supported agent directories and upserts normalized metadata.
     /// A generation prevents a cancelled or stale task from publishing results.
     func refresh() {
-        guard let context = modelContext else { return }
+        guard let context = modelContext else {
+            statusMessage = "Local library is not ready yet. Try Refresh again."
+            return
+        }
         guard !isLoading else {
             refreshRequestedWhileLoading = true
             return
         }
         isLoading = true
+        ingestionProgress = IngestionProgress(
+            phase: .scanning,
+            agentType: nil,
+            processed: 0,
+            total: 0,
+            sessionsImported: 0,
+            failures: 0,
+            currentName: nil
+        )
+        lastProgressPublish = nil
         if persistenceWarning == nil {
-            statusMessage = "Discovering local sessions…"
+            statusMessage = "Starting local session discovery…"
         }
         refreshGeneration &+= 1
         let generation = refreshGeneration
@@ -76,6 +92,7 @@ final class AppStore {
             defer {
                 if let self, self.refreshGeneration == generation {
                     self.isLoading = false
+                    self.ingestionProgress = nil
                     self.refreshTask = nil
                     if self.refreshRequestedWhileLoading {
                         self.refreshRequestedWhileLoading = false
@@ -86,14 +103,38 @@ final class AppStore {
 
             do {
                 let service = IngestionService(directories: directories, payloadStore: payloadStore)
-                let report = try await service.discoverAndParse()
+                let report = try await service.discoverAndParse { [weak self] progress in
+                    guard let self else { return }
+                    await self.publishIngestionProgress(progress, generation: generation)
+                }
                 try Task.checkCancellation()
                 guard let self, self.refreshGeneration == generation else { return }
+
+                let saving = IngestionProgress(
+                    phase: .saving,
+                    agentType: nil,
+                    processed: report.sessions.count,
+                    total: report.sessions.count,
+                    sessionsImported: report.sessions.count,
+                    failures: report.sources.reduce(0) { $0 + $1.failedSourcePaths.count },
+                    currentName: nil
+                )
+                self.publishIngestionProgress(saving, generation: generation, force: true)
                 try self.upsert(report, into: context)
                 await self.recomputeBranchPayloadProtection(in: context)
                 let references = try self.payloadReferences(in: context)
                 await payloadStore.setLiveReferences(references)
                 do {
+                    let cleanup = IngestionProgress(
+                        phase: .cleanup,
+                        agentType: nil,
+                        processed: 0,
+                        total: 0,
+                        sessionsImported: report.sessions.count,
+                        failures: report.sources.reduce(0) { $0 + $1.failedSourcePaths.count },
+                        currentName: nil
+                    )
+                    self.publishIngestionProgress(cleanup, generation: generation, force: true)
                     try await payloadStore.removeUnreferenced(keeping: references)
                 } catch {
                     if self.persistenceWarning == nil {
@@ -104,30 +145,69 @@ final class AppStore {
                 guard self.refreshGeneration == generation else { return }
                 self.lastRefreshDate = .now
                 if self.persistenceWarning == nil {
-                    let failed = report.sources.reduce(0) { $0 + $1.failedSourcePaths.count }
-                    let degraded = report.sources.reduce(0) { $0 + $1.degradedSourcePaths.count }
-                    let unavailable = report.sources.filter { $0.state == .unavailable }.count
-                    if failed > 0 || unavailable > 0 || degraded > 0 {
-                        let issues = failed + unavailable + degraded
-                        let suffix = issues == 1 ? "" : "s"
-                        self.statusMessage = "Imported \(report.sessions.count) sessions; \(issues) source\(suffix) needs attention"
-                    } else {
-                        let suffix = report.sessions.count == 1 ? "" : "s"
-                        self.statusMessage = report.sessions.isEmpty
-                            ? "No sessions found in the configured agent directories"
-                            : "Imported \(report.sessions.count) local session\(suffix)"
-                    }
+                    self.statusMessage = self.completionStatusMessage(for: report)
                 }
             } catch is CancellationError {
                 return
             } catch {
                 guard let self, self.refreshGeneration == generation else { return }
                 if self.persistenceWarning == nil {
-                    self.statusMessage = "Unable to save discovered sessions."
+                    let detail = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+                    self.statusMessage = detail.isEmpty
+                        ? "Unable to import local sessions."
+                        : "Unable to import local sessions: \(detail)"
                 }
-                self.logger.error("Unable to save discovered sessions")
+                self.logger.error("Unable to import local sessions: \(error.localizedDescription, privacy: .public)")
             }
         }
+    }
+
+    /// Publishes discovery progress to the status bar, throttled so large trees
+    /// do not flood the main actor while still updating at least ~10×/sec.
+    private func publishIngestionProgress(
+        _ progress: IngestionProgress,
+        generation: UInt64,
+        force: Bool = false
+    ) {
+        guard refreshGeneration == generation else { return }
+        let now = ContinuousClock.now
+        if !force, let last = lastProgressPublish, now - last < .milliseconds(100) {
+            return
+        }
+        lastProgressPublish = now
+        ingestionProgress = progress
+        if persistenceWarning == nil {
+            statusMessage = progress.userFacingMessage
+        }
+    }
+
+    private func completionStatusMessage(for report: IngestionReport) -> String {
+        let failed = report.sources.reduce(0) { $0 + $1.failedSourcePaths.count }
+        let degraded = report.sources.reduce(0) { $0 + $1.degradedSourcePaths.count }
+        let unavailable = report.sources.filter { $0.state == .unavailable }.count
+        let scannedRoots = report.sources.filter { $0.state == .scanned }.count
+        let discovered = report.sources.reduce(0) { $0 + $1.discoveredSourcePaths.count }
+
+        if report.sessions.isEmpty {
+            if unavailable == report.sources.count {
+                return "No agent session folders found under ~/.codex, ~/.grok, or ~/.cursor"
+            }
+            if discovered == 0 {
+                return "Scanned \(scannedRoots) agent location\(scannedRoots == 1 ? "" : "s"); no session files found"
+            }
+            if failed > 0 {
+                return "Found \(discovered) source\(discovered == 1 ? "" : "s") but none imported (\(failed) failed)"
+            }
+            return "No sessions could be imported from \(discovered) discovered source\(discovered == 1 ? "" : "s")"
+        }
+
+        if failed > 0 || unavailable > 0 || degraded > 0 {
+            let issues = failed + unavailable + degraded
+            let suffix = issues == 1 ? "" : "s"
+            return "Imported \(report.sessions.count) sessions; \(issues) source\(suffix) needs attention"
+        }
+        let suffix = report.sessions.count == 1 ? "" : "s"
+        return "Imported \(report.sessions.count) local session\(suffix)"
     }
 
     /// Creates an immutable local child trace containing the selected session prefix.
@@ -223,6 +303,7 @@ final class AppStore {
         eventWatcher = nil
         isWatching = false
         isLoading = false
+        ingestionProgress = nil
     }
 
     private func startWatching() {

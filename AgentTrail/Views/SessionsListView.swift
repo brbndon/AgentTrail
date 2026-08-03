@@ -53,20 +53,11 @@ struct SessionsListView: View {
             .background(.bar)
         }
         .safeAreaInset(edge: .bottom) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text(appStore.statusMessage)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                if appStore.isLoading {
-                    ProgressView()
-                        .controlSize(.small)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .background(.bar)
+            DiscoveryStatusBar(
+                message: appStore.statusMessage,
+                isLoading: appStore.isLoading,
+                progress: appStore.ingestionProgress
+            )
         }
         .navigationTitle("Sessions")
         .onAppear { reconcileSelection() }
@@ -83,6 +74,42 @@ struct SessionsListView: View {
         } else {
             selection = filteredSessions.first?.id
         }
+    }
+}
+
+private struct DiscoveryStatusBar: View {
+    let message: String
+    let isLoading: Bool
+    let progress: IngestionProgress?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(message)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+                .lineLimit(3)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityLabel(isLoading ? "Discovery progress" : "Status")
+                .accessibilityValue(message)
+
+            if isLoading {
+                if let fraction = progress?.fractionCompleted {
+                    ProgressView(value: fraction)
+                        .controlSize(.small)
+                        .accessibilityLabel("Import progress")
+                        .accessibilityValue("\(Int(fraction * 100)) percent")
+                } else {
+                    ProgressView()
+                        .controlSize(.small)
+                        .accessibilityLabel("Working")
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(.bar)
     }
 }
 
@@ -132,6 +159,7 @@ private struct SessionRowView: View {
                 session.agentType.displayName,
                 session.title,
                 "\(session.stepCount) events",
+                session.sourceState == .degraded ? "Degraded" : nil,
                 session.status == .recording ? "Live" : nil,
                 session.isPinned ? "Pinned" : nil
             ]

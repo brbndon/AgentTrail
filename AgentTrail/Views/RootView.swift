@@ -17,7 +17,12 @@ struct RootView: View {
                 TimelineView(session: selectedSession, payloadStore: appStore.payloadStore)
                     .id(selectedSession.id)
             } else {
-                EmptyStateView()
+                EmptyStateView(
+                    isLoading: appStore.isLoading,
+                    statusMessage: appStore.statusMessage,
+                    progress: appStore.ingestionProgress,
+                    hasSessions: !sessions.isEmpty
+                )
             }
         }
         .toolbar {
@@ -44,11 +49,48 @@ struct RootView: View {
 }
 
 struct EmptyStateView: View {
+    var isLoading = false
+    var statusMessage = ""
+    var progress: IngestionProgress?
+    var hasSessions = false
+
     var body: some View {
         ContentUnavailableView {
-            Label("Choose a session", systemImage: "point.3.connected.trianglepath.dotted")
+            if isLoading {
+                Label("Importing local sessions", systemImage: "arrow.triangle.2.circlepath")
+            } else if hasSessions {
+                Label("Choose a session", systemImage: "point.3.connected.trianglepath.dotted")
+            } else {
+                Label("No sessions yet", systemImage: "tray")
+            }
         } description: {
-            Text("Select a trace from the sidebar to inspect its imported events.")
+            if isLoading {
+                VStack(spacing: 12) {
+                    Text(statusMessage.isEmpty ? "Scanning local agent folders…" : statusMessage)
+                        .multilineTextAlignment(.center)
+                        .textSelection(.enabled)
+                    if let fraction = progress?.fractionCompleted {
+                        ProgressView(value: fraction)
+                            .frame(maxWidth: 280)
+                    } else {
+                        ProgressView()
+                            .controlSize(.regular)
+                    }
+                    Text("Large Codex/Grok trees can take several minutes on first import. Progress updates in the sidebar status bar.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 360)
+                }
+            } else if hasSessions {
+                Text("Select a trace from the sidebar to inspect its imported events.")
+            } else {
+                Text(statusMessage.isEmpty
+                    ? "Use Refresh to scan ~/.codex, ~/.grok, and ~/.cursor for local agent traces."
+                    : statusMessage)
+                    .multilineTextAlignment(.center)
+                    .textSelection(.enabled)
+            }
         }
         .accessibilityElement(children: .combine)
     }
