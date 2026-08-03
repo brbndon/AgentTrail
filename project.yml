@@ -1,0 +1,67 @@
+name: AgentTrail
+options:
+  bundleIdPrefix: com.brandon
+  deploymentTarget:
+    macOS: "15.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+settings:
+  base:
+    MACOSX_DEPLOYMENT_TARGET: "15.0"
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    CLANG_ENABLE_MODULES: YES
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    ENABLE_HARDENED_RUNTIME: YES
+    MARKETING_VERSION: "1.0"
+    CURRENT_PROJECT_VERSION: "1"
+targets:
+  AgentTrail:
+    type: application
+    platform: macOS
+    sources:
+      - path: AgentTrail
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.brandon.AgentTrail
+        INFOPLIST_FILE: AgentTrail/Resources/Info.plist
+        CODE_SIGNING_ALLOWED: YES
+        CODE_SIGNING_REQUIRED: NO
+        CODE_SIGN_INJECT_BASE_ENTITLEMENTS: YES
+        # Release/Developer ID builds require a real team id. Export or pass:
+        #   AGENTTRAIL_DEVELOPMENT_TEAM=<10-char team id>
+        # Local agent builds can use CODE_SIGNING_ALLOWED=NO. Apple Development
+        # alone is not enough for a notarized Developer ID Release artifact.
+        DEVELOPMENT_TEAM: $(AGENTTRAIL_DEVELOPMENT_TEAM)
+      configs:
+        Debug:
+          CODE_SIGN_STYLE: Automatic
+          CODE_SIGN_IDENTITY: "-"
+        Release:
+          CODE_SIGN_STYLE: Manual
+          CODE_SIGN_IDENTITY: "Developer ID Application"
+          CODE_SIGNING_ALLOWED: YES
+          CODE_SIGNING_REQUIRED: YES
+          CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
+    # Release validation is intentionally NOT a build phase: notarization tickets
+    # only exist on the final stapled artifact. After archive + Developer ID
+    # codesign + notarytool + stapler, run:
+    #   ./Scripts/validate-release.sh /path/to/AgentTrail.app
+    # Do not claim signed/notarized success without a stapled app that passes that script.
+    scheme:
+      gatherCoverageData: false
+      testTargets:
+        - AgentTrailTests
+  AgentTrailTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: AgentTrailTests
+    dependencies:
+      - target: AgentTrail
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.brandon.AgentTrailTests
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGNING_ALLOWED: NO
+        CODE_SIGNING_REQUIRED: NO
