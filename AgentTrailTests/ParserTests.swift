@@ -655,15 +655,41 @@ final class ParserTests: XCTestCase {
         XCTAssertTrue(phases.contains(.parsing))
         XCTAssertTrue(sawCodexParse)
         XCTAssertEqual(report.sessions.count, 1)
-        XCTAssertTrue(IngestionProgress(
+        let sample = IngestionProgress(
             phase: .parsing,
             agentType: .codex,
             processed: 2,
             total: 10,
             sessionsImported: 1,
+            sessionsSkipped: 0,
             failures: 0,
             currentName: "session.jsonl"
-        ).userFacingMessage.contains("2 of 10"))
+        )
+        XCTAssertTrue(sample.userFacingMessage.contains("2 of 10"))
+        XCTAssertEqual(try XCTUnwrap(sample.fractionCompleted), 0.2, accuracy: 0.001)
+    }
+
+    func testUnchangedSourcesAreSkippedOnSecondImport() async throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let directories = AgentDirectories(homeDirectory: root)
+        for directory in directories.defaultWatchPaths {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
+        let file = directories.codexSessions.appendingPathComponent("session.jsonl")
+        try #"{"type":"message","role":"user","content":"Hello"}"#
+            .write(to: file, atomically: true, encoding: .utf8)
+        let store = PayloadStore(rootURL: root.appendingPathComponent("Blobs"))
+        let service = IngestionService(directories: directories, payloadStore: store)
+        let first = try await service.discoverAndParse()
+        XCTAssertEqual(first.sessions.count, 1)
+        XCTAssertEqual(first.skippedUnchangedCount, 0)
+        let key = try XCTUnwrap(first.sessions.first?.sourceKey)
+        let modified = try XCTUnwrap(first.sessions.first?.sourceModifiedAt)
+        let second = try await service.discoverAndParse(knownSourceModifiedAt: [key: modified])
+        XCTAssertEqual(second.sessions.count, 0)
+        XCTAssertEqual(second.skippedUnchangedCount, 1)
+        XCTAssertEqual(second.sources.first(where: { $0.agentType == .codex })?.discoveredSourcePaths.count, 1)
     }
 
     func testSignedExitCodesArePreserved() async throws {

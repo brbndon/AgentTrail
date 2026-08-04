@@ -28,10 +28,14 @@ final class AppStore {
     private var eventWatcher: FSEventWatcher?
     private var refreshTask: Task<Void, Never>?
     private var scheduledRefreshTask: Task<Void, Never>?
+    /// User-requested or filesystem-requested rescan while a run is in flight.
+    /// Only honored once after the current run finishes (never cancels mid-import).
     private var refreshRequestedWhileLoading = false
     private var refreshGeneration: UInt64 = 0
     private var watchToken: UUID?
     private var lastProgressPublish: ContinuousClock.Instant?
+    /// Ignore FSEvents until first successful import finishes; they restart multi-minute scans.
+    private var filesystemWatchEnabled = false
     private let logger = Logger(subsystem: "com.brandon.AgentTrail", category: "app")
 
     init(
@@ -49,17 +53,19 @@ final class AppStore {
     }
 
     /// Loads the local trace directories once when the main window appears.
+    /// Filesystem watching starts only after the first import completes so live
+    /// agent logs cannot restart a multi-minute first scan.
     func bootstrap(context: ModelContext) {
         modelContext = context
         guard !hasBootstrapped else { return }
         hasBootstrapped = true
         Task { await recomputeBranchPayloadProtection(in: context) }
-        startWatching()
         refresh()
     }
 
     /// Re-scans all supported agent directories and upserts normalized metadata.
     /// A generation prevents a cancelled or stale task from publishing results.
+    /// Mid-import work is never cancelled by FSEvents; at most one follow-up runs after.
     func refresh() {
         guard let context = modelContext else {
             statusMessage = "Local library is not ready yet. Try Refresh again."
@@ -67,6 +73,9 @@ final class AppStore {
         }
         guard !isLoading else {
             refreshRequestedWhileLoading = true
+            if persistenceWarning == nil, !statusMessage.contains("rescan queued") {
+                statusMessage += " · rescan queued after this import"
+            }
             return
         }
         isLoading = true
@@ -76,6 +85,7 @@ final class AppStore {
             processed: 0,
             total: 0,
             sessionsImported: 0,
+            sessionsSkipped: 0,
             failures: 0,
             currentName: nil
         )
@@ -94,32 +104,55 @@ final class AppStore {
                     self.isLoading = false
                     self.ingestionProgress = nil
                     self.refreshTask = nil
+                    self.startWatchingIfNeeded()
                     if self.refreshRequestedWhileLoading {
                         self.refreshRequestedWhileLoading = false
-                        self.scheduleRefresh()
+                        // Follow-up uses skip-unchanged and only runs once.
+                        self.scheduleRefresh(delayMilliseconds: 1_500)
                     }
                 }
             }
 
             do {
+                guard let self else { return }
+                let known = try self.knownSourceModificationDates(in: context)
                 let service = IngestionService(directories: directories, payloadStore: payloadStore)
-                let report = try await service.discoverAndParse { [weak self] progress in
-                    guard let self else { return }
-                    await self.publishIngestionProgress(progress, generation: generation)
+                // Stream batches back to the main actor so ModelContext is never captured in a Sendable closure.
+                let (batchStream, batchContinuation) = AsyncStream.makeStream(of: [ParsedSession].self)
+                async let reportTask: IngestionReport = {
+                    defer { batchContinuation.finish() }
+                    return try await service.discoverAndParse(
+                        knownSourceModifiedAt: known,
+                        onProgress: { [weak self] progress in
+                            guard let self else { return }
+                            await self.publishIngestionProgress(progress, generation: generation)
+                        },
+                        onBatch: { batch in
+                            batchContinuation.yield(batch)
+                        }
+                    )
+                }()
+                for await batch in batchStream {
+                    guard self.refreshGeneration == generation else { break }
+                    try self.upsertSessions(batch, into: context)
                 }
+                let report = try await reportTask
                 try Task.checkCancellation()
-                guard let self, self.refreshGeneration == generation else { return }
+                guard self.refreshGeneration == generation else { return }
 
+                let totalWork = report.sessions.count + report.skippedUnchangedCount
                 let saving = IngestionProgress(
                     phase: .saving,
                     agentType: nil,
-                    processed: report.sessions.count,
-                    total: report.sessions.count,
+                    processed: totalWork,
+                    total: max(totalWork, 1),
                     sessionsImported: report.sessions.count,
+                    sessionsSkipped: report.skippedUnchangedCount,
                     failures: report.sources.reduce(0) { $0 + $1.failedSourcePaths.count },
                     currentName: nil
                 )
                 self.publishIngestionProgress(saving, generation: generation, force: true)
+                // Final pass applies source health (unavailable/failed) and any remaining sessions.
                 try self.upsert(report, into: context)
                 await self.recomputeBranchPayloadProtection(in: context)
                 let references = try self.payloadReferences(in: context)
@@ -128,9 +161,10 @@ final class AppStore {
                     let cleanup = IngestionProgress(
                         phase: .cleanup,
                         agentType: nil,
-                        processed: 0,
-                        total: 0,
+                        processed: totalWork,
+                        total: max(totalWork, 1),
                         sessionsImported: report.sessions.count,
+                        sessionsSkipped: report.skippedUnchangedCount,
                         failures: report.sources.reduce(0) { $0 + $1.failedSourcePaths.count },
                         currentName: nil
                     )
@@ -187,8 +221,9 @@ final class AppStore {
         let unavailable = report.sources.filter { $0.state == .unavailable }.count
         let scannedRoots = report.sources.filter { $0.state == .scanned }.count
         let discovered = report.sources.reduce(0) { $0 + $1.discoveredSourcePaths.count }
+        let skipped = report.skippedUnchangedCount
 
-        if report.sessions.isEmpty {
+        if report.sessions.isEmpty && skipped == 0 {
             if unavailable == report.sources.count {
                 return "No agent session folders found under ~/.codex, ~/.grok, or ~/.cursor"
             }
@@ -201,13 +236,29 @@ final class AppStore {
             return "No sessions could be imported from \(discovered) discovered source\(discovered == 1 ? "" : "s")"
         }
 
+        var parts: [String] = []
+        if report.sessions.count > 0 {
+            let suffix = report.sessions.count == 1 ? "" : "s"
+            parts.append("Imported \(report.sessions.count) session\(suffix)")
+        }
+        if skipped > 0 {
+            parts.append("\(skipped) unchanged")
+        }
         if failed > 0 || unavailable > 0 || degraded > 0 {
             let issues = failed + unavailable + degraded
             let suffix = issues == 1 ? "" : "s"
-            return "Imported \(report.sessions.count) sessions; \(issues) source\(suffix) needs attention"
+            parts.append("\(issues) source\(suffix) needs attention")
         }
-        let suffix = report.sessions.count == 1 ? "" : "s"
-        return "Imported \(report.sessions.count) local session\(suffix)"
+        return parts.joined(separator: "; ")
+    }
+
+    private func knownSourceModificationDates(in context: ModelContext) throws -> [String: Date] {
+        let sessions = try context.fetch(FetchDescriptor<SessionRecord>())
+        var known: [String: Date] = [:]
+        for session in sessions where !session.isBranch {
+            known[session.sourceKey] = session.sourceModifiedAt
+        }
+        return known
     }
 
     /// Creates an immutable local child trace containing the selected session prefix.
@@ -299,6 +350,7 @@ final class AppStore {
         refreshTask?.cancel()
         refreshTask = nil
         refreshRequestedWhileLoading = false
+        filesystemWatchEnabled = false
         eventWatcher?.stop()
         eventWatcher = nil
         isWatching = false
@@ -306,36 +358,54 @@ final class AppStore {
         ingestionProgress = nil
     }
 
-    private func startWatching() {
+    private func startWatchingIfNeeded() {
+        filesystemWatchEnabled = true
         guard eventWatcher == nil else { return }
         let token = UUID()
         watchToken = token
         let watcher = FSEventWatcher(paths: agentDirectories.defaultWatchPaths) { [weak self] in
             Task { @MainActor [weak self] in
                 guard let self, self.watchToken == token, self.eventWatcher != nil else { return }
-                self.scheduleRefresh()
+                // Never cancel an in-flight import. Queue at most one follow-up.
+                guard self.filesystemWatchEnabled else { return }
+                if self.isLoading {
+                    self.refreshRequestedWhileLoading = true
+                    return
+                }
+                self.scheduleRefresh(delayMilliseconds: 2_500)
             }
         }
         eventWatcher = watcher
         isWatching = watcher.start()
     }
 
-    private func scheduleRefresh() {
-        guard let token = watchToken else { return }
+    private func scheduleRefresh(delayMilliseconds: UInt64 = 2_500) {
+        let token = watchToken
         scheduledRefreshTask?.cancel()
         scheduledRefreshTask = Task<Void, Never> { @MainActor [weak self] in
             do {
-                try await Task.sleep(for: .milliseconds(400))
+                try await Task.sleep(for: .milliseconds(delayMilliseconds))
             } catch {
                 return
             }
-            guard let self, !Task.isCancelled, self.watchToken == token else { return }
+            guard let self, !Task.isCancelled else { return }
+            if let token, self.watchToken != token { return }
             self.scheduledRefreshTask = nil
             self.refresh()
         }
     }
 
+    /// Incremental save during long imports so the sidebar fills before the full tree finishes.
+    private func upsertSessions(_ sessions: [ParsedSession], into context: ModelContext) throws {
+        guard !sessions.isEmpty else { return }
+        try upsert(IngestionReport(sessions: sessions, sources: [], skippedUnchangedCount: 0), into: context, applySourceHealth: false)
+    }
+
     private func upsert(_ report: IngestionReport, into context: ModelContext) throws {
+        try upsert(report, into: context, applySourceHealth: true)
+    }
+
+    private func upsert(_ report: IngestionReport, into context: ModelContext, applySourceHealth: Bool) throws {
         for snapshot in report.sessions where !snapshot.sourceKey.hasPrefix("branch:") {
             let projectIdentity = snapshot.projectIdentity
             let projectDescriptor = FetchDescriptor<ProjectRecord>(predicate: #Predicate { $0.identity == projectIdentity })
@@ -451,27 +521,29 @@ final class AppStore {
             }
         }
 
-        let allSessions = try context.fetch(FetchDescriptor<SessionRecord>())
-        for source in report.sources {
-            for session in allSessions where !session.isBranch && session.agentType == source.agentType && isWithin(session.sourcePath, rootPath: source.rootPath) {
-                let path = URL(fileURLWithPath: session.sourcePath).standardizedFileURL.path
-                if source.state == .unavailable {
-                    session.sourceStateRawValue = SessionSourceState.unavailable.rawValue
-                    session.statusRawValue = SessionStatus.unavailable.rawValue
-                } else if source.failedSourcePaths.contains(path) {
-                    // Preserve last good snapshot metadata; mark source failed.
-                    session.sourceStateRawValue = SessionSourceState.failed.rawValue
-                    session.statusRawValue = SessionStatus.failed.rawValue
-                } else if source.degradedSourcePaths.contains(path) {
-                    session.sourceStateRawValue = SessionSourceState.degraded.rawValue
-                } else if source.discoveredSourcePaths.contains(path) {
-                    // Keep session-level degraded from the parse if present.
-                    if session.sourceState != .degraded {
-                        session.sourceStateRawValue = SessionSourceState.scanned.rawValue
+        if applySourceHealth, !report.sources.isEmpty {
+            let allSessions = try context.fetch(FetchDescriptor<SessionRecord>())
+            for source in report.sources {
+                for session in allSessions where !session.isBranch && session.agentType == source.agentType && isWithin(session.sourcePath, rootPath: source.rootPath) {
+                    let path = URL(fileURLWithPath: session.sourcePath).standardizedFileURL.path
+                    if source.state == .unavailable {
+                        session.sourceStateRawValue = SessionSourceState.unavailable.rawValue
+                        session.statusRawValue = SessionStatus.unavailable.rawValue
+                    } else if source.failedSourcePaths.contains(path) {
+                        // Preserve last good snapshot metadata; mark source failed.
+                        session.sourceStateRawValue = SessionSourceState.failed.rawValue
+                        session.statusRawValue = SessionStatus.failed.rawValue
+                    } else if source.degradedSourcePaths.contains(path) {
+                        session.sourceStateRawValue = SessionSourceState.degraded.rawValue
+                    } else if source.discoveredSourcePaths.contains(path) {
+                        // Keep session-level degraded from the parse if present.
+                        if session.sourceState != .degraded {
+                            session.sourceStateRawValue = SessionSourceState.scanned.rawValue
+                        }
+                    } else {
+                        session.sourceStateRawValue = SessionSourceState.unavailable.rawValue
+                        session.statusRawValue = SessionStatus.unavailable.rawValue
                     }
-                } else {
-                    session.sourceStateRawValue = SessionSourceState.unavailable.rawValue
-                    session.statusRawValue = SessionStatus.unavailable.rawValue
                 }
             }
         }

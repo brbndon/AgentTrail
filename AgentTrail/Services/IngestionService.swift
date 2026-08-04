@@ -31,6 +31,8 @@ struct IngestionSourceReport: Sendable {
 struct IngestionReport: Sendable {
     let sessions: [ParsedSession]
     let sources: [IngestionSourceReport]
+    /// Sources skipped because their on-disk mtime matched a known library snapshot.
+    let skippedUnchangedCount: Int
 }
 
 /// Live discovery/parse progress for status UI. Large local trees can take minutes.
@@ -44,44 +46,57 @@ struct IngestionProgress: Sendable, Equatable {
 
     var phase: Phase
     var agentType: AgentType?
-    /// Sources processed in the current parse loop (1-based when total > 0).
+    /// Overall sources handled so far (across all agents).
     var processed: Int
-    /// Discovered sources for the current agent (0 while scanning).
+    /// Overall discovered sources after the scan phase (stable — does not reset per agent).
     var total: Int
     var sessionsImported: Int
+    var sessionsSkipped: Int
     var failures: Int
     /// Short leaf name of the source currently being parsed, when known.
     var currentName: String?
 
     var userFacingMessage: String {
-        let agent = agentType?.displayName ?? "local agents"
+        let agent = agentType?.displayName
         switch phase {
         case .scanning:
-            return "Scanning \(agent) folders…"
+            if let agent {
+                return "Scanning \(agent) folders…"
+            }
+            return "Scanning local agent folders…"
         case .parsing:
             if total > 0 {
-                var line = "Parsing \(agent): \(min(processed, total)) of \(total)"
-                if sessionsImported > 0 { line += " · \(sessionsImported) ready" }
+                var line = "Importing \(min(processed, total)) of \(total)"
+                if let agent { line += " · \(agent)" }
+                if sessionsImported > 0 { line += " · \(sessionsImported) new" }
+                if sessionsSkipped > 0 { line += " · \(sessionsSkipped) unchanged" }
                 if failures > 0 { line += " · \(failures) failed" }
                 if let currentName, !currentName.isEmpty {
                     line += " · \(currentName)"
                 }
                 return line
             }
-            return "Parsing \(agent)…"
+            return agent.map { "Parsing \($0)…" } ?? "Parsing local sessions…"
         case .saving:
             return sessionsImported == 1
                 ? "Saving 1 session to the local library…"
-                : "Saving \(sessionsImported) sessions to the local library…"
+                : "Saving \(max(sessionsImported, 0)) sessions to the local library…"
         case .cleanup:
             return "Cleaning up unused payload files…"
         }
     }
 
-    /// Determinate fraction while parsing a known agent batch; nil otherwise.
+    /// Determinate fraction over the full import, never resets when switching agents.
     var fractionCompleted: Double? {
-        guard phase == .parsing, total > 0 else { return nil }
-        return min(1, max(0, Double(processed) / Double(total)))
+        switch phase {
+        case .parsing, .saving:
+            guard total > 0 else { return nil }
+            return min(1, max(0, Double(processed) / Double(total)))
+        case .scanning:
+            return total > 0 ? min(0.05, Double(processed) / Double(max(total, 1))) : nil
+        case .cleanup:
+            return 1
+        }
     }
 }
 
@@ -98,167 +113,236 @@ actor IngestionService {
 
     /// Returns parse results and source health. A failed individual source is
     /// retained in the report so AppStore can preserve its last good snapshot.
-    /// `onProgress` is invoked regularly so the UI can show agent/count updates
-    /// instead of a silent indefinite spinner on large trees.
+    ///
+    /// - Parameters:
+    ///   - knownSourceModifiedAt: `sourceKey` → last imported mtime. Matching sources
+    ///     are counted as processed but not re-parsed (fast refresh / resume).
+    ///   - onProgress: UI progress; `processed`/`total` are global across agents.
+    ///   - onBatch: Optional incremental sessions so the library can populate mid-import.
     func discoverAndParse(
-        onProgress: (@Sendable (IngestionProgress) async -> Void)? = nil
+        knownSourceModifiedAt: [String: Date] = [:],
+        onProgress: (@Sendable (IngestionProgress) async -> Void)? = nil,
+        onBatch: (@Sendable ([ParsedSession]) async throws -> Void)? = nil
     ) async throws -> IngestionReport {
-        var results: [ParsedSession] = []
-        var reports: [IngestionSourceReport] = []
         let codexParser = CodexSessionParser()
         let grokParser = GrokBuildSessionParser()
         let cursorParser = CursorSessionParser()
-        var sessionsImported = 0
-        var totalFailures = 0
 
-        // Codex
+        enum WorkItem {
+            case codex(URL)
+            case grok(URL)
+            case cursor(URL)
+
+            var agent: AgentType {
+                switch self {
+                case .codex: .codex
+                case .grok: .grokBuild
+                case .cursor: .cursor
+                }
+            }
+
+            var displayName: String {
+                switch self {
+                case .codex(let url), .cursor(let url): url.lastPathComponent
+                case .grok(let url): url.lastPathComponent
+                }
+            }
+
+            var sourcePath: String {
+                switch self {
+                case .codex(let url), .cursor(let url), .grok(let url):
+                    url.standardizedFileURL.path
+                }
+            }
+
+            var sourceKey: String {
+                switch self {
+                case .codex(let url): "codex:\(url.standardizedFileURL.path)"
+                case .grok(let url): "grok:\(url.standardizedFileURL.path)"
+                case .cursor(let url): "cursor:\(url.standardizedFileURL.path)"
+                }
+            }
+
+            var modifiedAt: Date {
+                switch self {
+                case .codex(let url), .cursor(let url):
+                    return url.contentModificationDate
+                case .grok(let url):
+                    return Self.directoryModifiedAt(url)
+                }
+            }
+
+            private static func directoryModifiedAt(_ directory: URL) -> Date {
+                let names = ["events.jsonl", "chat_history.jsonl", "prompt_history.jsonl", "rewind_points.jsonl"]
+                let dates = names.compactMap { name -> Date? in
+                    let file = directory.appendingPathComponent(name)
+                    guard FileManager.default.fileExists(atPath: file.path) else { return nil }
+                    return file.contentModificationDate
+                }
+                return dates.max() ?? directory.contentModificationDate
+            }
+        }
+
+        var work: [WorkItem] = []
+        var sourceStates: [(agent: AgentType, root: URL, readable: Bool, paths: [String])] = []
+
+        // Phase 1: discover everything first so progress totals stay stable.
+        await Self.emitProgress(
+            onProgress,
+            phase: .scanning,
+            agent: .codex,
+            processed: 0,
+            total: 0,
+            sessionsImported: 0,
+            sessionsSkipped: 0,
+            failures: 0
+        )
         if isReadableDirectory(directories.codexSessions) {
-            await Self.emitProgress(onProgress, phase: .scanning, agent: .codex, sessionsImported: sessionsImported, failures: totalFailures)
             let discovered = codexParser.discover(in: directories.codexSessions)
-            var failed: Set<String> = []
-            var degraded: Set<String> = []
-            let total = discovered.count
-            await Self.emitProgress(onProgress, phase: .parsing, agent: .codex, processed: 0, total: total, sessionsImported: sessionsImported, failures: totalFailures)
-            for (index, fileURL) in discovered.enumerated() {
-                try Task.checkCancellation()
-                let path = fileURL.standardizedFileURL.path
-                await Self.emitProgress(
-                    onProgress,
-                    phase: .parsing,
-                    agent: .codex,
-                    processed: index + 1,
-                    total: total,
-                    sessionsImported: sessionsImported,
-                    failures: totalFailures,
-                    currentName: fileURL.lastPathComponent
-                )
-                do {
-                    if let session = try await codexParser.parse(fileURL: fileURL, payloadStore: payloadStore) {
-                        results.append(session)
-                        sessionsImported += 1
-                        if session.sourceState == .degraded {
-                            degraded.insert(path)
-                        }
-                    }
-                } catch is CancellationError {
-                    throw CancellationError()
-                } catch {
-                    failed.insert(path)
-                    totalFailures += 1
-                    logger.debug("Skipping unavailable Codex session file")
-                }
-            }
-            reports.append(IngestionSourceReport(
-                agentType: .codex,
-                rootPath: directories.codexSessions.standardizedFileURL.path,
-                state: .scanned,
-                discoveredSourcePaths: Set(discovered.map { $0.standardizedFileURL.path }),
-                failedSourcePaths: failed,
-                degradedSourcePaths: degraded
-            ))
+            work.append(contentsOf: discovered.map { .codex($0) })
+            sourceStates.append((.codex, directories.codexSessions, true, discovered.map { $0.standardizedFileURL.path }))
         } else {
-            logger.debug("Codex sessions directory is not present")
-            reports.append(IngestionSourceReport(agentType: .codex, rootPath: directories.codexSessions.path, state: .unavailable, discoveredSourcePaths: [], failedSourcePaths: [], degradedSourcePaths: []))
+            sourceStates.append((.codex, directories.codexSessions, false, []))
         }
 
-        // Grok Build
+        await Self.emitProgress(
+            onProgress,
+            phase: .scanning,
+            agent: .grokBuild,
+            processed: 0,
+            total: work.count,
+            sessionsImported: 0,
+            sessionsSkipped: 0,
+            failures: 0
+        )
         if isReadableDirectory(directories.grokSessions) {
-            await Self.emitProgress(onProgress, phase: .scanning, agent: .grokBuild, sessionsImported: sessionsImported, failures: totalFailures)
             let discovered = grokParser.discover(in: directories.grokSessions)
-            var failed: Set<String> = []
-            var degraded: Set<String> = []
-            let total = discovered.count
-            await Self.emitProgress(onProgress, phase: .parsing, agent: .grokBuild, processed: 0, total: total, sessionsImported: sessionsImported, failures: totalFailures)
-            for (index, directory) in discovered.enumerated() {
-                try Task.checkCancellation()
-                let path = directory.standardizedFileURL.path
-                await Self.emitProgress(
-                    onProgress,
-                    phase: .parsing,
-                    agent: .grokBuild,
-                    processed: index + 1,
-                    total: total,
-                    sessionsImported: sessionsImported,
-                    failures: totalFailures,
-                    currentName: directory.lastPathComponent
-                )
-                do {
-                    if let session = try await grokParser.parse(directory: directory, payloadStore: payloadStore) {
-                        results.append(session)
-                        sessionsImported += 1
-                        if session.sourceState == .degraded {
-                            degraded.insert(path)
-                        }
-                    }
-                } catch is CancellationError {
-                    throw CancellationError()
-                } catch {
-                    failed.insert(path)
-                    totalFailures += 1
-                    logger.debug("Skipping unavailable Grok Build session directory")
-                }
-            }
-            reports.append(IngestionSourceReport(
-                agentType: .grokBuild,
-                rootPath: directories.grokSessions.standardizedFileURL.path,
-                state: .scanned,
-                discoveredSourcePaths: Set(discovered.map { $0.standardizedFileURL.path }),
-                failedSourcePaths: failed,
-                degradedSourcePaths: degraded
-            ))
+            work.append(contentsOf: discovered.map { .grok($0) })
+            sourceStates.append((.grokBuild, directories.grokSessions, true, discovered.map { $0.standardizedFileURL.path }))
         } else {
-            logger.debug("Grok sessions directory is not present")
-            reports.append(IngestionSourceReport(agentType: .grokBuild, rootPath: directories.grokSessions.path, state: .unavailable, discoveredSourcePaths: [], failedSourcePaths: [], degradedSourcePaths: []))
+            sourceStates.append((.grokBuild, directories.grokSessions, false, []))
         }
 
-        // Cursor
+        await Self.emitProgress(
+            onProgress,
+            phase: .scanning,
+            agent: .cursor,
+            processed: 0,
+            total: work.count,
+            sessionsImported: 0,
+            sessionsSkipped: 0,
+            failures: 0
+        )
         if isReadableDirectory(directories.cursorProjects) {
-            await Self.emitProgress(onProgress, phase: .scanning, agent: .cursor, sessionsImported: sessionsImported, failures: totalFailures)
             let discovered = cursorParser.discover(in: directories.cursorProjects)
-            var failed: Set<String> = []
-            var degraded: Set<String> = []
-            let total = discovered.count
-            await Self.emitProgress(onProgress, phase: .parsing, agent: .cursor, processed: 0, total: total, sessionsImported: sessionsImported, failures: totalFailures)
-            for (index, fileURL) in discovered.enumerated() {
-                try Task.checkCancellation()
-                let path = fileURL.standardizedFileURL.path
-                await Self.emitProgress(
-                    onProgress,
-                    phase: .parsing,
-                    agent: .cursor,
-                    processed: index + 1,
-                    total: total,
-                    sessionsImported: sessionsImported,
-                    failures: totalFailures,
-                    currentName: fileURL.lastPathComponent
-                )
-                do {
-                    if let session = try await cursorParser.parse(fileURL: fileURL, payloadStore: payloadStore) {
-                        results.append(session)
-                        sessionsImported += 1
-                        if session.sourceState == .degraded {
-                            degraded.insert(path)
+            work.append(contentsOf: discovered.map { .cursor($0) })
+            sourceStates.append((.cursor, directories.cursorProjects, true, discovered.map { $0.standardizedFileURL.path }))
+        } else {
+            sourceStates.append((.cursor, directories.cursorProjects, false, []))
+        }
+
+        let overallTotal = work.count
+        var results: [ParsedSession] = []
+        var pendingBatch: [ParsedSession] = []
+        var sessionsImported = 0
+        var sessionsSkipped = 0
+        var totalFailures = 0
+        var failedByAgent: [AgentType: Set<String>] = [:]
+        var degradedByAgent: [AgentType: Set<String>] = [:]
+
+        await Self.emitProgress(
+            onProgress,
+            phase: .parsing,
+            agent: work.first?.agent,
+            processed: 0,
+            total: overallTotal,
+            sessionsImported: 0,
+            sessionsSkipped: 0,
+            failures: 0
+        )
+
+        for (index, item) in work.enumerated() {
+            try Task.checkCancellation()
+            let path = item.sourcePath
+            let key = item.sourceKey
+            let modifiedAt = item.modifiedAt
+
+            await Self.emitProgress(
+                onProgress,
+                phase: .parsing,
+                agent: item.agent,
+                processed: index + 1,
+                total: overallTotal,
+                sessionsImported: sessionsImported,
+                sessionsSkipped: sessionsSkipped,
+                failures: totalFailures,
+                currentName: item.displayName
+            )
+
+            if Self.isUnchanged(sourceKey: key, modifiedAt: modifiedAt, known: knownSourceModifiedAt) {
+                sessionsSkipped += 1
+                continue
+            }
+
+            do {
+                let session: ParsedSession?
+                switch item {
+                case .codex(let url):
+                    session = try await codexParser.parse(fileURL: url, payloadStore: payloadStore)
+                case .grok(let url):
+                    session = try await grokParser.parse(directory: url, payloadStore: payloadStore)
+                case .cursor(let url):
+                    session = try await cursorParser.parse(fileURL: url, payloadStore: payloadStore)
+                }
+                if let session {
+                    results.append(session)
+                    pendingBatch.append(session)
+                    sessionsImported += 1
+                    if session.sourceState == .degraded {
+                        degradedByAgent[item.agent, default: []].insert(path)
+                    }
+                    if pendingBatch.count >= 20 {
+                        let batch = pendingBatch
+                        pendingBatch = []
+                        if let onBatch {
+                            try await onBatch(batch)
                         }
                     }
-                } catch is CancellationError {
-                    throw CancellationError()
-                } catch {
-                    failed.insert(path)
-                    totalFailures += 1
-                    logger.debug("Skipping unavailable Cursor transcript file")
                 }
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                failedByAgent[item.agent, default: []].insert(path)
+                totalFailures += 1
+                logger.debug("Skipping unavailable source for \(item.agent.rawValue, privacy: .public)")
             }
-            reports.append(IngestionSourceReport(
-                agentType: .cursor,
-                rootPath: directories.cursorProjects.standardizedFileURL.path,
-                state: .scanned,
-                discoveredSourcePaths: Set(discovered.map { $0.standardizedFileURL.path }),
-                failedSourcePaths: failed,
-                degradedSourcePaths: degraded
-            ))
-        } else {
-            logger.debug("Cursor projects directory is not present")
-            reports.append(IngestionSourceReport(agentType: .cursor, rootPath: directories.cursorProjects.path, state: .unavailable, discoveredSourcePaths: [], failedSourcePaths: [], degradedSourcePaths: []))
+        }
+        if !pendingBatch.isEmpty, let onBatch {
+            try await onBatch(pendingBatch)
+            pendingBatch = []
+        }
+
+        var reports: [IngestionSourceReport] = []
+        for entry in sourceStates {
+            if !entry.readable {
+                reports.append(IngestionSourceReport(
+                    agentType: entry.agent,
+                    rootPath: entry.root.path,
+                    state: .unavailable,
+                    discoveredSourcePaths: [],
+                    failedSourcePaths: [],
+                    degradedSourcePaths: []
+                ))
+            } else {
+                reports.append(IngestionSourceReport(
+                    agentType: entry.agent,
+                    rootPath: entry.root.standardizedFileURL.path,
+                    state: .scanned,
+                    discoveredSourcePaths: Set(entry.paths),
+                    failedSourcePaths: failedByAgent[entry.agent] ?? [],
+                    degradedSourcePaths: degradedByAgent[entry.agent] ?? []
+                ))
+            }
         }
 
         return IngestionReport(
@@ -266,7 +350,8 @@ actor IngestionService {
                 if $0.startDate != $1.startDate { return $0.startDate > $1.startDate }
                 return $0.sourceKey < $1.sourceKey
             },
-            sources: reports.sorted { $0.agentType.rawValue < $1.agentType.rawValue }
+            sources: reports.sorted { $0.agentType.rawValue < $1.agentType.rawValue },
+            skippedUnchangedCount: sessionsSkipped
         )
     }
 
@@ -278,6 +363,12 @@ actor IngestionService {
         return FileManager.default.isReadableFile(atPath: url.path)
     }
 
+    /// File mtimes and SwiftData dates can differ by sub-second rounding.
+    private static func isUnchanged(sourceKey: String, modifiedAt: Date, known: [String: Date]) -> Bool {
+        guard let knownDate = known[sourceKey] else { return false }
+        return abs(knownDate.timeIntervalSince(modifiedAt)) < 1.5
+    }
+
     private static func emitProgress(
         _ onProgress: (@Sendable (IngestionProgress) async -> Void)?,
         phase: IngestionProgress.Phase,
@@ -285,6 +376,7 @@ actor IngestionService {
         processed: Int = 0,
         total: Int = 0,
         sessionsImported: Int,
+        sessionsSkipped: Int,
         failures: Int,
         currentName: String? = nil
     ) async {
@@ -295,8 +387,15 @@ actor IngestionService {
             processed: processed,
             total: total,
             sessionsImported: sessionsImported,
+            sessionsSkipped: sessionsSkipped,
             failures: failures,
             currentName: currentName
         ))
+    }
+}
+
+private extension URL {
+    var contentModificationDate: Date {
+        (try? resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .now
     }
 }

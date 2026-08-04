@@ -76,7 +76,7 @@ struct EmptyStateView: View {
                         ProgressView()
                             .controlSize(.regular)
                     }
-                    Text("Large Codex/Grok trees can take several minutes on first import. Progress updates in the sidebar status bar.")
+                    Text("First import of large Codex/Grok trees can take a while. Sessions appear in the sidebar as they import; the progress bar should only move forward.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
