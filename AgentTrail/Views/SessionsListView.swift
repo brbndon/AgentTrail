@@ -3,8 +3,17 @@ import SwiftUI
 
 struct SessionsListView: View {
     @Environment(AppStore.self) private var appStore
-    @Query(sort: \SessionRecord.startDate, order: .reverse) private var sessions: [SessionRecord]
+    @Query private var sessions: [SessionRecord]
     @Binding var selection: UUID?
+
+    init(selection: Binding<UUID?>, limit: Int) {
+        _selection = selection
+        var descriptor = FetchDescriptor<SessionRecord>(
+            sortBy: [SortDescriptor(\SessionRecord.sourceModifiedAt, order: .reverse)]
+        )
+        descriptor.fetchLimit = max(limit, 1)
+        _sessions = Query(descriptor)
+    }
 
     private var filteredSessions: [SessionRecord] {
         let query = appStore.sidebarSearch.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -13,6 +22,7 @@ struct SessionsListView: View {
             return TraceSearch.matches(query, fields: [
                 $0.title,
                 $0.agentType.displayName,
+                $0.project?.name ?? "",
                 $0.workingDirectory,
                 $0.sourcePath,
                 $0.status.rawValue,
@@ -56,7 +66,11 @@ struct SessionsListView: View {
             DiscoveryStatusBar(
                 message: appStore.statusMessage,
                 isLoading: appStore.isLoading,
-                progress: appStore.ingestionProgress
+                progress: appStore.ingestionProgress,
+                visibleCount: sessions.count,
+                totalCount: appStore.totalAvailableSessionCount,
+                hasMoreSessions: appStore.hasMoreSessions,
+                loadMore: appStore.loadMoreSessions
             )
         }
         .navigationTitle("Sessions")
@@ -81,6 +95,10 @@ private struct DiscoveryStatusBar: View {
     let message: String
     let isLoading: Bool
     let progress: IngestionProgress?
+    let visibleCount: Int
+    let totalCount: Int
+    let hasMoreSessions: Bool
+    let loadMore: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -105,6 +123,20 @@ private struct DiscoveryStatusBar: View {
                         .accessibilityLabel("Working")
                 }
             }
+
+            if totalCount > 0 {
+                Text("Showing \(min(visibleCount, totalCount)) of \(totalCount) Codex threads")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+
+            if hasMoreSessions {
+                Button("Load 30 More", systemImage: "arrow.down.circle", action: loadMore)
+                    .buttonStyle(.borderless)
+                    .disabled(isLoading)
+                    .frame(minHeight: 44)
+                    .accessibilityHint("Loads the next older page of Codex threads")
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 14)
@@ -127,8 +159,12 @@ private struct SessionRowView: View {
                 Text(session.title)
                     .font(.body)
                     .lineLimit(2)
+                Label(session.project?.name ?? "Unknown project", systemImage: "folder")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
                 HStack(spacing: 5) {
-                    Text(session.startDate, style: .relative)
+                    Text("Updated \(session.sourceModifiedAt, style: .relative)")
                     Text("·")
                     Text("\(session.stepCount) events")
                     if session.sourceState == .degraded {
@@ -157,6 +193,7 @@ private struct SessionRowView: View {
         .accessibilityLabel(
             [
                 session.agentType.displayName,
+                session.project?.name ?? "Unknown project",
                 session.title,
                 "\(session.stepCount) events",
                 session.sourceState == .degraded ? "Degraded" : nil,

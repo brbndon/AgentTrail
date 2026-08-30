@@ -33,6 +33,27 @@ struct IngestionReport: Sendable {
     let sources: [IngestionSourceReport]
     /// Sources skipped because their on-disk mtime matched a known library snapshot.
     let skippedUnchangedCount: Int
+    /// Total Codex JSONL files found before the newest-first page limit is applied.
+    let totalDiscoveredSessionCount: Int
+    let requestedSessionLimit: Int
+
+    var hasMoreSessions: Bool {
+        requestedSessionLimit < totalDiscoveredSessionCount
+    }
+
+    init(
+        sessions: [ParsedSession],
+        sources: [IngestionSourceReport],
+        skippedUnchangedCount: Int,
+        totalDiscoveredSessionCount: Int = 0,
+        requestedSessionLimit: Int = 0
+    ) {
+        self.sessions = sessions
+        self.sources = sources
+        self.skippedUnchangedCount = skippedUnchangedCount
+        self.totalDiscoveredSessionCount = totalDiscoveredSessionCount
+        self.requestedSessionLimit = requestedSessionLimit
+    }
 }
 
 /// Live discovery/parse progress for status UI. Large local trees can take minutes.
@@ -121,12 +142,15 @@ actor IngestionService {
     ///   - onBatch: Optional incremental sessions so the library can populate mid-import.
     func discoverAndParse(
         knownSourceModifiedAt: [String: Date] = [:],
+        codexSessionLimit: Int = 30,
+        includeExperimentalAgents: Bool = false,
         onProgress: (@Sendable (IngestionProgress) async -> Void)? = nil,
         onBatch: (@Sendable ([ParsedSession]) async throws -> Void)? = nil
     ) async throws -> IngestionReport {
         let codexParser = CodexSessionParser()
         let grokParser = GrokBuildSessionParser()
         let cursorParser = CursorSessionParser()
+        let requestedLimit = max(codexSessionLimit, 0)
 
         enum WorkItem {
             case codex(URL)
@@ -199,46 +223,34 @@ actor IngestionService {
         )
         if isReadableDirectory(directories.codexSessions) {
             let discovered = codexParser.discover(in: directories.codexSessions)
-            work.append(contentsOf: discovered.map { .codex($0) })
+            work.append(contentsOf: discovered.prefix(requestedLimit).map { .codex($0) })
             sourceStates.append((.codex, directories.codexSessions, true, discovered.map { $0.standardizedFileURL.path }))
         } else {
             sourceStates.append((.codex, directories.codexSessions, false, []))
         }
 
-        await Self.emitProgress(
-            onProgress,
-            phase: .scanning,
-            agent: .grokBuild,
-            processed: 0,
-            total: work.count,
-            sessionsImported: 0,
-            sessionsSkipped: 0,
-            failures: 0
-        )
-        if isReadableDirectory(directories.grokSessions) {
-            let discovered = grokParser.discover(in: directories.grokSessions)
-            work.append(contentsOf: discovered.map { .grok($0) })
-            sourceStates.append((.grokBuild, directories.grokSessions, true, discovered.map { $0.standardizedFileURL.path }))
-        } else {
-            sourceStates.append((.grokBuild, directories.grokSessions, false, []))
+        // Keep the existing parsers available for targeted development, but the
+        // user-facing app is Codex-first until their schemas and UX are ready.
+        if includeExperimentalAgents {
+            if isReadableDirectory(directories.grokSessions) {
+                let discovered = grokParser.discover(in: directories.grokSessions)
+                work.append(contentsOf: discovered.map { .grok($0) })
+                sourceStates.append((.grokBuild, directories.grokSessions, true, discovered.map { $0.standardizedFileURL.path }))
+            } else {
+                sourceStates.append((.grokBuild, directories.grokSessions, false, []))
+            }
+            if isReadableDirectory(directories.cursorProjects) {
+                let discovered = cursorParser.discover(in: directories.cursorProjects)
+                work.append(contentsOf: discovered.map { .cursor($0) })
+                sourceStates.append((.cursor, directories.cursorProjects, true, discovered.map { $0.standardizedFileURL.path }))
+            } else {
+                sourceStates.append((.cursor, directories.cursorProjects, false, []))
+            }
         }
 
-        await Self.emitProgress(
-            onProgress,
-            phase: .scanning,
-            agent: .cursor,
-            processed: 0,
-            total: work.count,
-            sessionsImported: 0,
-            sessionsSkipped: 0,
-            failures: 0
-        )
-        if isReadableDirectory(directories.cursorProjects) {
-            let discovered = cursorParser.discover(in: directories.cursorProjects)
-            work.append(contentsOf: discovered.map { .cursor($0) })
-            sourceStates.append((.cursor, directories.cursorProjects, true, discovered.map { $0.standardizedFileURL.path }))
-        } else {
-            sourceStates.append((.cursor, directories.cursorProjects, false, []))
+        work.sort {
+            if $0.modifiedAt != $1.modifiedAt { return $0.modifiedAt > $1.modifiedAt }
+            return $0.sourcePath > $1.sourcePath
         }
 
         let overallTotal = work.count
@@ -351,7 +363,9 @@ actor IngestionService {
                 return $0.sourceKey < $1.sourceKey
             },
             sources: reports.sorted { $0.agentType.rawValue < $1.agentType.rawValue },
-            skippedUnchangedCount: sessionsSkipped
+            skippedUnchangedCount: sessionsSkipped,
+            totalDiscoveredSessionCount: sourceStates.first(where: { $0.agent == .codex })?.paths.count ?? 0,
+            requestedSessionLimit: requestedLimit
         )
     }
 

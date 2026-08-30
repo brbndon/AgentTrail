@@ -4,24 +4,32 @@ import SwiftUI
 struct RootView: View {
     @Environment(AppStore.self) private var appStore
     @Environment(\.modelContext) private var modelContext
-    @Query(sort: \SessionRecord.startDate, order: .reverse) private var sessions: [SessionRecord]
+    @Query private var latestSession: [SessionRecord]
+
+    init() {
+        var descriptor = FetchDescriptor<SessionRecord>(
+            sortBy: [SortDescriptor(\SessionRecord.sourceModifiedAt, order: .reverse)]
+        )
+        descriptor.fetchLimit = 1
+        _latestSession = Query(descriptor)
+    }
 
     var body: some View {
         @Bindable var appStore = appStore
 
         NavigationSplitView {
-            SessionsListView(selection: $appStore.selectedSessionID)
+            SessionsListView(selection: $appStore.selectedSessionID, limit: appStore.loadedSessionLimit)
+                .id(appStore.loadedSessionLimit)
                 .frame(minWidth: 270)
         } detail: {
-            if let selectedSession = sessions.first(where: { $0.id == appStore.selectedSessionID }) {
-                TimelineView(session: selectedSession, payloadStore: appStore.payloadStore)
-                    .id(selectedSession.id)
+            if let selectedSessionID = appStore.selectedSessionID {
+                SelectedSessionView(sessionID: selectedSessionID, payloadStore: appStore.payloadStore)
             } else {
                 EmptyStateView(
                     isLoading: appStore.isLoading,
                     statusMessage: appStore.statusMessage,
                     progress: appStore.ingestionProgress,
-                    hasSessions: !sessions.isEmpty
+                    hasSessions: !latestSession.isEmpty
                 )
             }
         }
@@ -33,7 +41,7 @@ struct RootView: View {
                     Label("Refresh Sessions", systemImage: "arrow.clockwise")
                 }
                 .disabled(appStore.isLoading)
-                .help("Scan Codex, Grok Build, and Cursor session folders")
+                .help("Refresh the loaded Codex session pages")
             }
         }
         .task {
@@ -44,6 +52,26 @@ struct RootView: View {
             if appStore.selectedSessionID == nil {
                 appStore.statusMessage = "Select a session to search its timeline"
             }
+        }
+    }
+}
+
+private struct SelectedSessionView: View {
+    @Query private var sessions: [SessionRecord]
+    let payloadStore: PayloadStore
+
+    init(sessionID: UUID, payloadStore: PayloadStore) {
+        let selectedID = sessionID
+        _sessions = Query(filter: #Predicate<SessionRecord> { $0.id == selectedID })
+        self.payloadStore = payloadStore
+    }
+
+    var body: some View {
+        if let session = sessions.first {
+            TimelineView(session: session, payloadStore: payloadStore)
+                .id(session.id)
+        } else {
+            ContentUnavailableView("Session unavailable", systemImage: "questionmark.folder")
         }
     }
 }
@@ -76,7 +104,7 @@ struct EmptyStateView: View {
                         ProgressView()
                             .controlSize(.regular)
                     }
-                    Text("First import of large Codex/Grok trees can take a while. Sessions appear in the sidebar as they import; the progress bar should only move forward.")
+                    Text("AgentTrail loads Codex history 30 threads at a time. Sessions appear in the sidebar as they import.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
@@ -86,7 +114,7 @@ struct EmptyStateView: View {
                 Text("Select a trace from the sidebar to inspect its imported events.")
             } else {
                 Text(statusMessage.isEmpty
-                    ? "Use Refresh to scan ~/.codex, ~/.grok, and ~/.cursor for local agent traces."
+                    ? "Use Refresh to scan ~/.codex/sessions for local Codex traces."
                     : statusMessage)
                     .multilineTextAlignment(.center)
                     .textSelection(.enabled)

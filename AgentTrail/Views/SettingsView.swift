@@ -17,6 +17,13 @@ struct SettingsView: View {
                         .textSelection(.enabled)
                         .foregroundStyle(.secondary)
                 }
+            } header: {
+                Text("Watched location")
+            } footer: {
+                Text("AgentTrail currently watches Codex history and imports it in newest-first pages of 30 threads.")
+            }
+
+            Section {
                 LabeledContent("Grok Build sessions") {
                     Text(directories.grokSessions.path)
                         .textSelection(.enabled)
@@ -28,9 +35,9 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
             } header: {
-                Text("Watched locations")
+                Text("Experimental parsers")
             } footer: {
-                Text("These locations are watched while AgentTrail is open. Custom locations and persistent bookmarks will be added later.")
+                Text("Grok Build and Cursor parsing remains in the project, but these sources are not scanned by the user-facing app yet.")
             }
 
             Section {

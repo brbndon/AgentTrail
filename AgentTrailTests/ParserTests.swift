@@ -34,6 +34,60 @@ final class ParserTests: XCTestCase {
         XCTAssertEqual(session.steps.map(\.payloadReference), secondParse.steps.map(\.payloadReference))
     }
 
+    func testCodexParserUsesCanonicalConversationMetadataAndToolDiagnostics() async throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("session.jsonl")
+        let jsonl = #"""
+        {"timestamp":"2026-08-30T10:00:00Z","type":"session_meta","payload":{"timestamp":"2026-08-30T10:00:00Z","cwd":"/Users/example/Code/AgentTrail"}}
+        {"timestamp":"2026-08-30T10:00:01Z","type":"response_item","payload":{"type":"message","role":"developer","content":"Internal instructions"}}
+        {"timestamp":"2026-08-30T10:00:02Z","type":"response_item","payload":{"type":"message","role":"user","content":"# AGENTS.md instructions"}}
+        {"timestamp":"2026-08-30T10:00:03Z","type":"event_msg","payload":{"type":"user_message","message":"Fix the current app"}}
+        {"timestamp":"2026-08-30T10:00:04Z","type":"response_item","payload":{"type":"function_call","name":"functions.exec","call_id":"call-1","arguments":"{\"cmd\":\"swift test\"}"}}
+        {"timestamp":"2026-08-30T10:00:05Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call-1","output":"Tests passed","exit_code":0}}
+        {"timestamp":"2026-08-30T10:00:06Z","type":"turn_context","payload":{"cwd":"/tmp/wrong","summary":"internal context"}}
+        {"timestamp":"2026-08-30T10:00:07Z","type":"event_msg","payload":{"type":"agent_message","phase":"commentary","message":"I found the root cause"}}
+        """#
+        try jsonl.write(to: file, atomically: true, encoding: .utf8)
+
+        let session = try require(try await CodexSessionParser().parse(
+            fileURL: file,
+            payloadStore: PayloadStore(rootURL: root.appendingPathComponent("Blobs"))
+        ))
+
+        XCTAssertEqual(session.title, "Fix the current app")
+        XCTAssertEqual(session.workingDirectory, "/Users/example/Code/AgentTrail")
+        XCTAssertEqual(session.projectName, "AgentTrail")
+        XCTAssertEqual(session.steps.count, 4)
+        XCTAssertEqual(session.steps.map(\.kind), [.user, .shellCommand, .toolResult, .assistant])
+        XCTAssertEqual(session.steps.map(\.title), ["User request", "Run exec", "exec result", "Agent update"])
+        XCTAssertEqual(session.steps[1].commandText, "swift test")
+        XCTAssertFalse(session.steps.contains { $0.summary.contains("Internal instructions") })
+        XCTAssertFalse(session.steps.contains { $0.summary.contains("AGENTS.md") })
+    }
+
+    func testCodexParserKeepsFallbackUserMessageWhenOnlyCanonicalAgentMessagesExist() async throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("session.jsonl")
+        let jsonl = #"""
+        {"timestamp":"2026-08-24T10:00:00Z","type":"session_meta","payload":{"cwd":"/Users/example/Code/Legacy"}}
+        {"timestamp":"2026-08-24T10:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"# AGENTS.md instructions <INSTRUCTIONS>internal</INSTRUCTIONS>"}]}}
+        {"timestamp":"2026-08-24T10:00:02Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Repair the legacy parser"}]}}
+        {"timestamp":"2026-08-24T10:00:03Z","type":"response_item","payload":{"type":"agent_message","content":[{"type":"output_text","text":"I will inspect it"}]}}
+        """#
+        try jsonl.write(to: file, atomically: true, encoding: .utf8)
+
+        let session = try require(try await CodexSessionParser().parse(
+            fileURL: file,
+            payloadStore: PayloadStore(rootURL: root.appendingPathComponent("Blobs"))
+        ))
+
+        XCTAssertEqual(session.title, "Repair the legacy parser")
+        XCTAssertEqual(session.steps.map(\.kind), [.user, .assistant])
+        XCTAssertFalse(session.steps.contains { $0.summary.contains("AGENTS.md") })
+    }
+
     func testCursorParserHandlesStatusTimestampsAndTokenCounts() async throws {
         let root = try makeTemporaryDirectory().appendingPathComponent("Users-brandon-Code-Demo/agent-transcripts/session", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -85,14 +139,14 @@ final class ParserTests: XCTestCase {
         try (first + "\n" + second).write(to: file, atomically: true, encoding: .utf8)
         let store = PayloadStore(rootURL: root.appendingPathComponent("Blobs"))
         let initial = try require(try await CodexSessionParser().parse(fileURL: file, payloadStore: store))
-        let initialIDs = Dictionary(uniqueKeysWithValues: initial.steps.map { ($0.title, $0.identity) })
+        let initialIDs = Dictionary(uniqueKeysWithValues: initial.steps.map { ($0.summary, $0.identity) })
 
         let inserted = #"{"id":"x","type":"message","role":"assistant","content":"Inserted"}"#
         try (second + "\n" + inserted + "\n" + first).write(to: file, atomically: true, encoding: .utf8)
         let changed = try require(try await CodexSessionParser().parse(fileURL: file, payloadStore: store))
-        XCTAssertEqual(changed.steps.first(where: { $0.title == "A" })?.identity, initialIDs["A"])
-        XCTAssertEqual(changed.steps.first(where: { $0.title == "B" })?.identity, initialIDs["B"])
-        XCTAssertNotEqual(changed.steps.first(where: { $0.title == "Inserted" })?.identity, initialIDs["A"])
+        XCTAssertEqual(changed.steps.first(where: { $0.summary == "A" })?.identity, initialIDs["A"])
+        XCTAssertEqual(changed.steps.first(where: { $0.summary == "B" })?.identity, initialIDs["B"])
+        XCTAssertNotEqual(changed.steps.first(where: { $0.summary == "Inserted" })?.identity, initialIDs["A"])
 
         try #"{"id":"a","type":"message","role":"assistant","content":"A rewritten"}"#.write(to: file, atomically: true, encoding: .utf8)
         let rewritten = try require(try await CodexSessionParser().parse(fileURL: file, payloadStore: store))
@@ -667,6 +721,76 @@ final class ParserTests: XCTestCase {
         )
         XCTAssertTrue(sample.userFacingMessage.contains("2 of 10"))
         XCTAssertEqual(try XCTUnwrap(sample.fractionCompleted), 0.2, accuracy: 0.001)
+    }
+
+    func testCodexDiscoveryLoadsNewestThirtyAndReportsOlderPages() async throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let directories = AgentDirectories(homeDirectory: root)
+        try FileManager.default.createDirectory(at: directories.codexSessions, withIntermediateDirectories: true)
+        let baseDate = Date(timeIntervalSince1970: 1_800_000_000)
+
+        for index in 0..<35 {
+            let file = directories.codexSessions.appendingPathComponent("session-\(index).jsonl")
+            try #"{"type":"message","role":"user","content":"Thread \#(index)"}"#
+                .write(to: file, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes(
+                [.modificationDate: baseDate.addingTimeInterval(TimeInterval(index))],
+                ofItemAtPath: file.path
+            )
+        }
+
+        let service = IngestionService(
+            directories: directories,
+            payloadStore: PayloadStore(rootURL: root.appendingPathComponent("Blobs"))
+        )
+        let firstPage = try await service.discoverAndParse(codexSessionLimit: 30)
+
+        XCTAssertEqual(firstPage.sessions.count, 30)
+        XCTAssertEqual(firstPage.totalDiscoveredSessionCount, 35)
+        XCTAssertTrue(firstPage.hasMoreSessions)
+        XCTAssertEqual(firstPage.sessions.first?.title, "Thread 34")
+        XCTAssertEqual(firstPage.sessions.last?.title, "Thread 5")
+    }
+
+    @MainActor
+    func testAppStoreLoadsNextCodexPageOnDemand() async throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let directories = AgentDirectories(homeDirectory: root)
+        for directory in directories.defaultWatchPaths {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
+        let baseDate = Date(timeIntervalSince1970: 1_800_000_000)
+        for index in 0..<35 {
+            let file = directories.codexSessions.appendingPathComponent("session-\(index).jsonl")
+            try #"{"type":"message","role":"user","content":"Thread \#(index)"}"#
+                .write(to: file, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes(
+                [.modificationDate: baseDate.addingTimeInterval(TimeInterval(index))],
+                ofItemAtPath: file.path
+            )
+        }
+
+        let context = ModelContext(try makeContainer(inMemory: true))
+        let appStore = AppStore(
+            modelContext: context,
+            agentDirectories: directories,
+            payloadStore: PayloadStore(rootURL: root.appendingPathComponent("Blobs"))
+        )
+        appStore.refresh()
+        try await waitForRefresh(appStore)
+        XCTAssertEqual(appStore.loadedSessionLimit, 30)
+        XCTAssertEqual(appStore.totalAvailableSessionCount, 35)
+        XCTAssertTrue(appStore.hasMoreSessions)
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<SessionRecord>()), 30)
+
+        appStore.loadMoreSessions()
+        try await waitForRefresh(appStore)
+        XCTAssertEqual(appStore.loadedSessionLimit, 35)
+        XCTAssertFalse(appStore.hasMoreSessions)
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<SessionRecord>()), 35)
+        appStore.stopWatching()
     }
 
     func testUnchangedSourcesAreSkippedOnSecondImport() async throws {

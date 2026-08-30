@@ -60,6 +60,7 @@ struct TimelineView: View {
             }
         }
         .navigationTitle(session.title)
+        .navigationSubtitle(session.project?.name ?? "Unknown project")
         .onAppear {
             ensureSelection()
         }

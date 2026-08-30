@@ -7,6 +7,10 @@ import os
 @MainActor
 @Observable
 final class AppStore {
+    static let sessionPageSize = 30
+    private static let codexNormalizationVersion = 2
+    private static let codexNormalizationVersionKey = "CodexNormalizationVersion"
+
     var isLoading = false
     var lastRefreshDate: Date?
     var statusMessage: String
@@ -19,6 +23,12 @@ final class AppStore {
     var sidebarSearch = ""
     var agentFilter: AgentType?
     private(set) var isWatching = false
+    private(set) var loadedSessionLimit = AppStore.sessionPageSize
+    private(set) var totalAvailableSessionCount = 0
+
+    var hasMoreSessions: Bool {
+        loadedSessionLimit < totalAvailableSessionCount
+    }
 
     let agentDirectories: AgentDirectories
     let payloadStore: PayloadStore
@@ -34,6 +44,9 @@ final class AppStore {
     private var refreshGeneration: UInt64 = 0
     private var watchToken: UUID?
     private var lastProgressPublish: ContinuousClock.Instant?
+    private var knownSessionLimitOverride: Int?
+    private var requiresVisiblePageReindex = !AgentTrailRuntime.isTestHost
+        && UserDefaults.standard.integer(forKey: AppStore.codexNormalizationVersionKey) < AppStore.codexNormalizationVersion
     /// Ignore FSEvents until first successful import finishes; they restart multi-minute scans.
     private var filesystemWatchEnabled = false
     private let logger = Logger(subsystem: "com.brandon.AgentTrail", category: "app")
@@ -98,6 +111,9 @@ final class AppStore {
         refreshTask?.cancel()
         let directories = agentDirectories
         let payloadStore = payloadStore
+        let sessionLimit = loadedSessionLimit
+        let knownSessionLimit = knownSessionLimitOverride ?? (requiresVisiblePageReindex ? 0 : sessionLimit)
+        knownSessionLimitOverride = nil
         refreshTask = Task { @MainActor [weak self] in
             defer {
                 if let self, self.refreshGeneration == generation {
@@ -115,7 +131,9 @@ final class AppStore {
 
             do {
                 guard let self else { return }
-                let known = try self.knownSourceModificationDates(in: context)
+                let known = knownSessionLimit > 0
+                    ? try self.knownSourceModificationDates(in: context, limit: knownSessionLimit)
+                    : [:]
                 let service = IngestionService(directories: directories, payloadStore: payloadStore)
                 // Stream batches back to the main actor so ModelContext is never captured in a Sendable closure.
                 let (batchStream, batchContinuation) = AsyncStream.makeStream(of: [ParsedSession].self)
@@ -123,6 +141,7 @@ final class AppStore {
                     defer { batchContinuation.finish() }
                     return try await service.discoverAndParse(
                         knownSourceModifiedAt: known,
+                        codexSessionLimit: sessionLimit,
                         onProgress: { [weak self] progress in
                             guard let self else { return }
                             await self.publishIngestionProgress(progress, generation: generation)
@@ -139,6 +158,7 @@ final class AppStore {
                 let report = try await reportTask
                 try Task.checkCancellation()
                 guard self.refreshGeneration == generation else { return }
+                self.totalAvailableSessionCount = report.totalDiscoveredSessionCount
 
                 let totalWork = report.sessions.count + report.skippedUnchangedCount
                 let saving = IngestionProgress(
@@ -154,30 +174,15 @@ final class AppStore {
                 self.publishIngestionProgress(saving, generation: generation, force: true)
                 // Final pass applies source health (unavailable/failed) and any remaining sessions.
                 try self.upsert(report, into: context)
-                await self.recomputeBranchPayloadProtection(in: context)
-                let references = try self.payloadReferences(in: context)
-                await payloadStore.setLiveReferences(references)
-                do {
-                    let cleanup = IngestionProgress(
-                        phase: .cleanup,
-                        agentType: nil,
-                        processed: totalWork,
-                        total: max(totalWork, 1),
-                        sessionsImported: report.sessions.count,
-                        sessionsSkipped: report.skippedUnchangedCount,
-                        failures: report.sources.reduce(0) { $0 + $1.failedSourcePaths.count },
-                        currentName: nil
-                    )
-                    self.publishIngestionProgress(cleanup, generation: generation, force: true)
-                    try await payloadStore.removeUnreferenced(keeping: references)
-                } catch {
-                    if self.persistenceWarning == nil {
-                        self.statusMessage = "Imported sessions, but payload cleanup needs attention"
-                    }
-                    self.logger.error("Payload cleanup failed")
-                }
                 guard self.refreshGeneration == generation else { return }
                 self.lastRefreshDate = .now
+                if self.requiresVisiblePageReindex {
+                    self.requiresVisiblePageReindex = false
+                    UserDefaults.standard.set(
+                        Self.codexNormalizationVersion,
+                        forKey: Self.codexNormalizationVersionKey
+                    )
+                }
                 if self.persistenceWarning == nil {
                     self.statusMessage = self.completionStatusMessage(for: report)
                 }
@@ -194,6 +199,13 @@ final class AppStore {
                 self.logger.error("Unable to import local sessions: \(error.localizedDescription, privacy: .public)")
             }
         }
+    }
+
+    func loadMoreSessions() {
+        guard !isLoading, hasMoreSessions else { return }
+        knownSessionLimitOverride = loadedSessionLimit
+        loadedSessionLimit = min(loadedSessionLimit + Self.sessionPageSize, totalAvailableSessionCount)
+        refresh()
     }
 
     /// Publishes discovery progress to the status bar, throttled so large trees
@@ -225,7 +237,7 @@ final class AppStore {
 
         if report.sessions.isEmpty && skipped == 0 {
             if unavailable == report.sources.count {
-                return "No agent session folders found under ~/.codex, ~/.grok, or ~/.cursor"
+                return "The Codex session folder at ~/.codex/sessions is unavailable"
             }
             if discovered == 0 {
                 return "Scanned \(scannedRoots) agent location\(scannedRoots == 1 ? "" : "s"); no session files found"
@@ -236,7 +248,8 @@ final class AppStore {
             return "No sessions could be imported from \(discovered) discovered source\(discovered == 1 ? "" : "s")"
         }
 
-        var parts: [String] = []
+        let visible = min(report.requestedSessionLimit, report.totalDiscoveredSessionCount)
+        var parts = ["Showing latest \(visible) of \(report.totalDiscoveredSessionCount) Codex threads"]
         if report.sessions.count > 0 {
             let suffix = report.sessions.count == 1 ? "" : "s"
             parts.append("Imported \(report.sessions.count) session\(suffix)")
@@ -252,8 +265,14 @@ final class AppStore {
         return parts.joined(separator: "; ")
     }
 
-    private func knownSourceModificationDates(in context: ModelContext) throws -> [String: Date] {
-        let sessions = try context.fetch(FetchDescriptor<SessionRecord>())
+    private func knownSourceModificationDates(in context: ModelContext, limit: Int) throws -> [String: Date] {
+        let codex = AgentType.codex.rawValue
+        var descriptor = FetchDescriptor<SessionRecord>(
+            predicate: #Predicate { $0.agentTypeRawValue == codex && $0.parentSessionID == nil },
+            sortBy: [SortDescriptor(\SessionRecord.sourceModifiedAt, order: .reverse)]
+        )
+        descriptor.fetchLimit = max(limit, 1)
+        let sessions = try context.fetch(descriptor)
         var known: [String: Date] = [:]
         for session in sessions where !session.isBranch {
             known[session.sourceKey] = session.sourceModifiedAt
@@ -363,7 +382,7 @@ final class AppStore {
         guard eventWatcher == nil else { return }
         let token = UUID()
         watchToken = token
-        let watcher = FSEventWatcher(paths: agentDirectories.defaultWatchPaths) { [weak self] in
+        let watcher = FSEventWatcher(paths: [agentDirectories.codexSessions]) { [weak self] in
             Task { @MainActor [weak self] in
                 guard let self, self.watchToken == token, self.eventWatcher != nil else { return }
                 // Never cancel an in-flight import. Queue at most one follow-up.
@@ -571,12 +590,6 @@ final class AppStore {
                 statusMessage = "Imported sessions, but branch payload protection needs attention"
             }
         }
-    }
-
-    private func payloadReferences(in context: ModelContext) throws -> Set<String> {
-        let stepReferences = try context.fetch(FetchDescriptor<StepRecord>()).compactMap(\.fullPayloadRef)
-        let diffReferences = try context.fetch(FetchDescriptor<FileChangeRecord>()).compactMap(\.diffStorageKey)
-        return Set(stepReferences + diffReferences)
     }
 
     private func isWithin(_ path: String, rootPath: String) -> Bool {
