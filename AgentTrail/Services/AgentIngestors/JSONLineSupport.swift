@@ -167,6 +167,20 @@ enum JSONLineSupport {
         return true
     }
 
+    static func hasFailure(in value: Any, depth: Int = 0) -> Bool {
+        guard depth < 5, let dictionary = value as? [String: Any] else { return false }
+        if isTruthyError(dictionary["error"]) || isTruthyError(dictionary["isError"]) { return true }
+        if let success = dictionary["success"] as? Bool, !success { return true }
+        if let status = string(dictionary["status"])?.lowercased(),
+           ["failed", "failure", "error", "errored", "cancelled", "canceled", "timed_out", "timeout"].contains(status) {
+            return true
+        }
+        for key in ["item", "result", "execution"] {
+            if let nested = dictionary[key], hasFailure(in: nested, depth: depth + 1) { return true }
+        }
+        return false
+    }
+
     static func date(_ value: Any?) -> Date? {
         if let seconds = value as? NSNumber {
             return date(fromUnixTimestamp: seconds.doubleValue)
@@ -389,7 +403,15 @@ enum JSONLineSupport {
         guard let dictionary = value as? [String: Any] else { return [] }
         var candidates: [[String: Any]] = []
         for key in ["file_changes", "fileChanges", "changes", "files"] {
-            candidates.append(contentsOf: array(firstValue(in: dictionary, keys: [key])).compactMap { $0 as? [String: Any] })
+            let changes = firstValue(in: dictionary, keys: [key])
+            candidates.append(contentsOf: array(changes).compactMap { $0 as? [String: Any] })
+            if let mappedChanges = changes as? [String: Any] {
+                for path in mappedChanges.keys.sorted() {
+                    guard var change = mappedChanges[path] as? [String: Any] else { continue }
+                    change["path"] = path
+                    candidates.append(change)
+                }
+            }
         }
         if candidates.isEmpty, firstPath(in: dictionary) != nil,
            eventType?.contains("file") == true || eventType?.contains("patch") == true ||
@@ -399,8 +421,8 @@ enum JSONLineSupport {
 
         return candidates.prefix(TraceLimits.maxFileChanges).compactMap { candidate in
             guard let path = firstPath(in: candidate) else { return nil }
-            let changeType = firstString(in: candidate, keys: ["change_type", "changeType", "operation", "status"]) ?? "modified"
-            let hasDiff = nonNull(firstValue(in: candidate, keys: ["diff", "patch", "unified_diff"])) != nil
+            let changeType = firstString(in: candidate, keys: ["change_type", "changeType", "operation", "status", "type"]) ?? "modified"
+            let hasDiff = nonNull(firstValue(in: candidate, keys: ["diff", "patch", "unified_diff", "content"])) != nil
             return ParsedFileChange(
                 path: path,
                 changeType: changeType,

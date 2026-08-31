@@ -38,6 +38,8 @@ struct ParsedStep: Codable, Sendable {
     let filePath: String?
     let exitCode: Int?
     let tokenCount: Int?
+    let toolCallID: String?
+    let toolName: String?
     let fileChanges: [ParsedFileChange]
 
     init(
@@ -54,6 +56,8 @@ struct ParsedStep: Codable, Sendable {
         filePath: String? = nil,
         exitCode: Int? = nil,
         tokenCount: Int? = nil,
+        toolCallID: String? = nil,
+        toolName: String? = nil,
         fileChanges: [ParsedFileChange] = []
     ) {
         self.identity = TraceLimits.required(identity, to: TraceLimits.identity)
@@ -69,6 +73,8 @@ struct ParsedStep: Codable, Sendable {
         self.filePath = TraceLimits.bounded(filePath, to: TraceLimits.path)
         self.exitCode = exitCode.map(TraceLimits.boundedInteger)
         self.tokenCount = tokenCount.map(TraceLimits.boundedNonNegative)
+        self.toolCallID = TraceLimits.bounded(toolCallID, to: TraceLimits.identity)
+        self.toolName = TraceLimits.bounded(toolName, to: TraceLimits.eventType, trim: true)
         self.fileChanges = Array(fileChanges.prefix(TraceLimits.maxFileChanges))
     }
 }

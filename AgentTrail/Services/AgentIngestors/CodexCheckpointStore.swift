@@ -11,7 +11,7 @@ struct CodexIncrementalParseResult: Sendable {
 }
 
 private struct CodexIngestionCheckpoint: Codable, Sendable {
-    static let currentVersion = 1
+    static let currentVersion = 2
 
     let version: Int
     let sourceKey: String
@@ -159,7 +159,9 @@ extension CodexSessionParser {
             payloadStore: payloadStore,
             byteRange: startOffset..<completeOffset,
             sourceIdentityURL: sourceURL,
-            sourceModificationDate: before.modificationDate
+            sourceModificationDate: before.modificationDate,
+            knownToolNamesByCallID: Self.toolNamesByCallID(in: checkpoint?.session),
+            hasPriorCanonicalUserMessage: Self.hasCanonicalUserMessage(in: checkpoint?.session)
         )
         let after = try CodexFileSnapshot.capture(sourceURL)
         guard after == before else { throw TraceParserError.sourceChanged(sourceURL) }
@@ -283,6 +285,22 @@ extension CodexSessionParser {
         )
     }
 
+    private static func toolNamesByCallID(in session: ParsedSession?) -> [String: String] {
+        guard let session else { return [:] }
+        return session.steps.reduce(into: [:]) { names, step in
+            if let callID = step.toolCallID, let toolName = step.toolName {
+                names[callID] = toolName
+            }
+        }
+    }
+
+    private static func hasCanonicalUserMessage(in session: ParsedSession?) -> Bool {
+        session?.steps.contains {
+            $0.kind == .user
+                && ($0.searchText == "user_message" || $0.searchText.hasPrefix("user_message "))
+        } == true
+    }
+
     private static func lastCompleteRecordOffset(in url: URL, fileSize: UInt64) throws -> UInt64 {
         guard fileSize > 0 else { return 0 }
         let handle = try FileHandle(forReadingFrom: url)
@@ -342,6 +360,8 @@ private extension ParsedStep {
             filePath: filePath,
             exitCode: exitCode,
             tokenCount: tokenCount,
+            toolCallID: toolCallID,
+            toolName: toolName,
             fileChanges: fileChanges
         )
     }

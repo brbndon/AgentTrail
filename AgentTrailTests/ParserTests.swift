@@ -4,6 +4,99 @@ import XCTest
 @testable import AgentTrail
 
 final class ParserTests: XCTestCase {
+    func testCanonicalCodexFixtureUsesMetadataAndSuppressesContextDuplicates() async throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = try copyCodexFixture(named: "canonical-events.jsonl", to: root)
+        let session = try require(try await CodexSessionParser().parse(
+            fileURL: file,
+            payloadStore: PayloadStore(rootURL: root.appendingPathComponent("Blobs"))
+        ))
+
+        XCTAssertEqual(session.title, "Build the sample feature")
+        XCTAssertEqual(session.workingDirectory, "/workspace/SampleApp")
+        XCTAssertEqual(session.projectName, "SampleApp")
+        XCTAssertEqual(session.steps.map(\.kind), [.user, .assistant])
+        XCTAssertFalse(session.steps.contains { $0.summary.contains("Injected") || $0.summary.contains("Duplicate") })
+        XCTAssertTrue(session.steps.allSatisfy { $0.payloadReference != nil })
+    }
+
+    func testResponseToolFixtureLinksResultsCommandsExitCodesAndFailures() async throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = try copyCodexFixture(named: "response-tools.jsonl", to: root)
+        let session = try require(try await CodexSessionParser().parse(
+            fileURL: file,
+            payloadStore: PayloadStore(rootURL: root.appendingPathComponent("Blobs"))
+        ))
+
+        let command = try XCTUnwrap(session.steps.first { $0.kind == .shellCommand })
+        XCTAssertEqual(command.commandText, "swift test --filter SampleTests")
+        XCTAssertEqual(command.title, "Run swift test --filter SampleTests")
+        let failedResult = try XCTUnwrap(session.steps.first { $0.exitCode == 1 })
+        XCTAssertEqual(failedResult.kind, .toolResult)
+        XCTAssertEqual(failedResult.title, "exec failed")
+        XCTAssertTrue(failedResult.hasError)
+        XCTAssertTrue(session.steps.contains { $0.title == "apply patch result" })
+    }
+
+    func testDirectDiagnosticFixtureExtractsCommandsPatchesAndToolResults() async throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = try copyCodexFixture(named: "direct-diagnostics.jsonl", to: root)
+        let session = try require(try await CodexSessionParser().parse(
+            fileURL: file,
+            payloadStore: PayloadStore(rootURL: root.appendingPathComponent("Blobs"))
+        ))
+
+        XCTAssertTrue(session.steps.contains {
+            $0.commandText == "/usr/bin/git status --short" && $0.exitCode == 0 && !$0.hasError
+        })
+        XCTAssertTrue(session.steps.contains {
+            $0.commandText == "swift test" && $0.exitCode == 2 && $0.hasError && $0.title.hasPrefix("Failed:")
+        })
+        let patch = try XCTUnwrap(session.steps.first { $0.kind == .fileChange })
+        XCTAssertEqual(patch.title, "Changed 2 files")
+        XCTAssertEqual(Set(patch.fileChanges.map(\.path)), ["Sources/Sample.swift", "Sources/New.swift"])
+        XCTAssertTrue(patch.fileChanges.allSatisfy(\.hasDiff))
+        let mcpResult = try XCTUnwrap(session.steps.first { $0.kind == .toolResult })
+        XCTAssertEqual(mcpResult.title, "inspect result")
+        XCTAssertFalse(mcpResult.hasError)
+    }
+
+    func testItemCompletedFixtureExtractsDiagnosticsAndSkipsConversationEnvelope() async throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = try copyCodexFixture(named: "item-completed.jsonl", to: root)
+        let session = try require(try await CodexSessionParser().parse(
+            fileURL: file,
+            payloadStore: PayloadStore(rootURL: root.appendingPathComponent("Blobs"))
+        ))
+
+        XCTAssertEqual(session.steps.filter { $0.kind == .user }.count, 1)
+        XCTAssertFalse(session.steps.contains { $0.summary.contains("Injected duplicate") })
+        XCTAssertTrue(session.steps.contains { $0.commandText == "swift test --filter ItemTests" })
+        XCTAssertEqual(session.steps.first { $0.kind == .fileChange }?.fileChanges.first?.path, "Sources/Item.swift")
+        let failedTool = try XCTUnwrap(session.steps.first { $0.kind == .toolResult })
+        XCTAssertEqual(failedTool.title, "inspect project failed")
+        XCTAssertTrue(failedTool.hasError)
+    }
+
+    func testCodexCompatibilityFixturesContainNoIdentifyingHomePathsOrSecretMarkers() throws {
+        let fixtureRoot = codexFixtureRoot
+        let files = try FileManager.default.contentsOfDirectory(at: fixtureRoot, includingPropertiesForKeys: nil)
+            .filter { $0.pathExtension == "jsonl" }
+        XCTAssertEqual(files.count, 4)
+        for file in files {
+            let text = try String(contentsOf: file, encoding: .utf8).lowercased()
+            XCTAssertFalse(text.contains("/users/"), file.lastPathComponent)
+            XCTAssertFalse(text.contains("brandon"), file.lastPathComponent)
+            XCTAssertFalse(text.contains("api_key"), file.lastPathComponent)
+            XCTAssertFalse(text.contains("authorization"), file.lastPathComponent)
+            XCTAssertFalse(text.contains("bearer "), file.lastPathComponent)
+        }
+    }
+
     func testCodexIncrementalCheckpointReadsOnlyGrowthAndDefersTrailingPartialRecord() async throws {
         let root = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -72,6 +165,55 @@ final class ParserTests: XCTestCase {
         let rewritten = try await parser.parseIncrementally(fileURL: file, payloadStore: payloadStore, checkpointStore: checkpointStore)
         XCTAssertTrue(rewritten.checkpointWasReset)
         XCTAssertEqual(rewritten.session?.steps.map(\.summary), ["Other value"])
+
+        let replacementFile = root.appendingPathComponent("replacement.jsonl")
+        let inodeReplacement = #"{"type":"message","role":"assistant","content":"New inode"}"# + "\n"
+        try inodeReplacement.write(to: replacementFile, atomically: true, encoding: .utf8)
+        try FileManager.default.removeItem(at: file)
+        try FileManager.default.moveItem(at: replacementFile, to: file)
+        let replaced = try await parser.parseIncrementally(fileURL: file, payloadStore: payloadStore, checkpointStore: checkpointStore)
+        XCTAssertTrue(replaced.checkpointWasReset)
+        XCTAssertEqual(replaced.session?.steps.map(\.summary), ["New inode"])
+    }
+
+    func testCodexIncrementalCheckpointLinksToolResultAppendedAfterCall() async throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("tool-growth.jsonl")
+        let call = #"{"timestamp":"2026-01-06T10:00:00Z","type":"response_item","payload":{"type":"function_call","name":"exec","arguments":"{\"cmd\":\"swift test\"}","call_id":"cross-boundary"}}"# + "\n"
+        try call.write(to: file, atomically: true, encoding: .utf8)
+        let payloadStore = PayloadStore(rootURL: root.appendingPathComponent("Blobs"))
+        let checkpointStore = CodexCheckpointStore(rootURL: root.appendingPathComponent("Checkpoints"))
+        let parser = CodexSessionParser()
+        _ = try await parser.parseIncrementally(fileURL: file, payloadStore: payloadStore, checkpointStore: checkpointStore)
+
+        let result = #"{"timestamp":"2026-01-06T10:00:01Z","type":"response_item","payload":{"type":"function_call_output","call_id":"cross-boundary","output":"failed","exit_code":1}}"# + "\n"
+        try Self.append(Data(result.utf8), to: file)
+        let grown = try await parser.parseIncrementally(fileURL: file, payloadStore: payloadStore, checkpointStore: checkpointStore)
+        let resultStep = try XCTUnwrap(grown.session?.steps.first { $0.kind == .toolResult })
+        XCTAssertEqual(resultStep.toolName, "exec")
+        XCTAssertEqual(resultStep.title, "exec failed")
+        XCTAssertTrue(resultStep.hasError)
+    }
+
+    func testCodexIncrementalCheckpointSuppressesMirroredMessagesWithoutCollapsingRepeatedRequests() async throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("conversation-growth.jsonl")
+        let initial = #"{"timestamp":"2026-01-07T10:00:00Z","type":"event_msg","payload":{"type":"user_message","message":"Repeat this request"}}"# + "\n"
+        try initial.write(to: file, atomically: true, encoding: .utf8)
+        let payloadStore = PayloadStore(rootURL: root.appendingPathComponent("Blobs"))
+        let checkpointStore = CodexCheckpointStore(rootURL: root.appendingPathComponent("Checkpoints"))
+        let parser = CodexSessionParser()
+        _ = try await parser.parseIncrementally(fileURL: file, payloadStore: payloadStore, checkpointStore: checkpointStore)
+
+        let growth = #"{"timestamp":"2026-01-07T10:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":"Mirrored low-level request"}}"# + "\n"
+            + #"{"timestamp":"2026-01-07T10:00:02Z","type":"event_msg","payload":{"type":"user_message","message":"Repeat this request"}}"# + "\n"
+        try Self.append(Data(growth.utf8), to: file)
+
+        let grown = try await parser.parseIncrementally(fileURL: file, payloadStore: payloadStore, checkpointStore: checkpointStore)
+        XCTAssertEqual(grown.session?.steps.filter { $0.kind == .user }.map(\.summary), ["Repeat this request", "Repeat this request"])
+        XCTAssertFalse(grown.session?.steps.contains { $0.summary == "Mirrored low-level request" } == true)
     }
 
     func testCodexIncrementalCheckpointDoesNotAdvanceWhenFileChangesDuringImport() async throws {
@@ -194,7 +336,7 @@ final class ParserTests: XCTestCase {
         XCTAssertEqual(session.projectName, "AgentTrail")
         XCTAssertEqual(session.steps.count, 4)
         XCTAssertEqual(session.steps.map(\.kind), [.user, .shellCommand, .toolResult, .assistant])
-        XCTAssertEqual(session.steps.map(\.title), ["User request", "Run exec", "exec result", "Agent update"])
+        XCTAssertEqual(session.steps.map(\.title), ["User request", "Run swift test", "exec result", "Agent update"])
         XCTAssertEqual(session.steps[1].commandText, "swift test")
         XCTAssertFalse(session.steps.contains { $0.summary.contains("Internal instructions") })
         XCTAssertFalse(session.steps.contains { $0.summary.contains("AGENTS.md") })
@@ -1008,6 +1150,19 @@ final class ParserTests: XCTestCase {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("AgentTrailTests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
+    }
+
+    private var codexFixtureRoot: URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .appendingPathComponent("Fixtures/Codex", isDirectory: true)
+    }
+
+    private func copyCodexFixture(named name: String, to directory: URL) throws -> URL {
+        let source = codexFixtureRoot.appendingPathComponent(name)
+        let destination = directory.appendingPathComponent(name)
+        try FileManager.default.copyItem(at: source, to: destination)
+        return destination
     }
 
     private static func append(_ data: Data, to file: URL) throws {

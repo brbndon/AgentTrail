@@ -9,7 +9,8 @@ AgentTrail is a local macOS viewer for understanding what coding agents did insi
 - Loads older history in explicit 30-thread pages with **Load 30 More**.
 - Uses Codex `session_meta` and `turn_context` records to identify the workspace.
 - Uses canonical `user_message` and `agent_message` records for clean task titles and conversation steps.
-- Links tool results back to their call IDs so commands, tool names, failures, and exit codes are easier to diagnose.
+- Links tool results back to their call IDs (including across incremental refreshes) so commands, tool names, failures, and exit codes are easier to diagnose.
+- Normalizes direct and nested Codex command, patch, file-change, and MCP completion records into concise semantic steps.
 - Stores normalized metadata in SwiftData and raw event payloads in private local files.
 - Persists private, derived Codex checkpoints so growing active sessions resume at the last complete JSONL record.
 - Watches `~/.codex/sessions` for active-session updates.
@@ -27,7 +28,7 @@ Grok Build and Cursor parsers still exist in the source tree, but the shipping w
 
 Open `AgentTrail.xcodeproj`, select the **AgentTrail** scheme and **My Mac**, then run the app. The checked-in Xcode project is generated from `project.yml`; use XcodeGen when changing target or file membership configuration.
 
-Run the `AgentTrailTests` target before distributing a build. The parser tests use temporary local fixtures and do not read or modify the real Codex history.
+Run the `AgentTrailTests` target before distributing a build. Sanitized compatibility fixtures live under `AgentTrailTests/Fixtures/Codex`; tests copy them into temporary directories and never read or modify the real Codex history.
 
 ## Data and privacy
 
@@ -58,8 +59,6 @@ Malformed complete records degrade one session instead of blocking the whole lib
 
 ## Near-term roadmap
 
-- Add fixture-driven compatibility tests for every Codex CLI/app schema version.
 - Add project-level grouping and per-project thread counts in the sidebar.
-- Add structured patch/file-change extraction from Codex tool payloads.
 - Add opt-in export with automatic secret and home-path redaction.
 - Re-enable Grok Build and Cursor only after their pagination, metadata, and regression coverage match the Codex path.

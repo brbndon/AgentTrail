@@ -28,7 +28,9 @@ struct CodexSessionParser {
         payloadStore: PayloadStore,
         byteRange: Range<UInt64>? = nil,
         sourceIdentityURL: URL? = nil,
-        sourceModificationDate: Date? = nil
+        sourceModificationDate: Date? = nil,
+        knownToolNamesByCallID: [String: String] = [:],
+        hasPriorCanonicalUserMessage: Bool = false
     ) async throws -> ParsedSession? {
         guard Self.isRegularNonSymlink(fileURL) else { throw TraceParserError.unavailable(fileURL) }
         let identityURL = sourceIdentityURL ?? fileURL
@@ -52,6 +54,8 @@ struct CodexSessionParser {
             let command: String?
             let exitCode: Int?
             let tokenCount: Int?
+            let toolCallID: String?
+            let toolName: String?
             let fileChanges: [ParsedFileChange]
             var identity: String = ""
             var payloadReference: String?
@@ -61,8 +65,8 @@ struct CodexSessionParser {
         var contextualWorkingDirectory = ""
         var metadataStartDate: Date?
         var canonicalTitle: String?
-        var hasCanonicalUserMessage = false
-        var toolNamesByCallID: [String: String] = [:]
+        var hasCanonicalUserMessage = hasPriorCanonicalUserMessage
+        var toolNamesByCallID = knownToolNamesByCallID
         var events: [RawEvent] = []
         var capped = false
         let firstStats = try await JSONLineSupport.forEachDictionary(at: fileURL, byteRange: byteRange) { lineIndex, record, rawPayload in
@@ -70,9 +74,15 @@ struct CodexSessionParser {
             let payload = JSONLineSupport.dictionary(record["payload"]) ?? record
             let outerType = JSONLineSupport.string(JSONLineSupport.firstValue(in: record, keys: ["type"]))
             let payloadType = JSONLineSupport.string(JSONLineSupport.firstValue(in: payload, keys: ["type"]))
-            let eventType = TraceLimits.required((payloadType ?? outerType ?? "event").lowercased(), to: TraceLimits.eventType)
+            let completedItem = payloadType == "item_completed" ? JSONLineSupport.dictionary(payload["item"]) : nil
+            let completedItemType = completedItem.flatMap { JSONLineSupport.firstString(in: $0, keys: ["type"]) }
+            let eventType = TraceLimits.required(
+                Self.normalizedEventType(completedItemType ?? payloadType ?? outerType ?? "event"),
+                to: TraceLimits.eventType
+            )
             let role = TraceLimits.bounded(
-                JSONLineSupport.firstString(in: payload, keys: ["role"]) ?? JSONLineSupport.firstString(in: record, keys: ["role"]),
+                JSONLineSupport.firstString(in: completedItem ?? payload, keys: ["role"])
+                    ?? JSONLineSupport.firstString(in: record, keys: ["role"]),
                 to: TraceLimits.role,
                 trim: true
             )?.lowercased()
@@ -89,33 +99,48 @@ struct CodexSessionParser {
                 metadataStartDate = JSONLineSupport.firstDate(in: payload as Any, keys: ["timestamp", "created_at", "createdAt"]) ?? eventDate
                 return
             }
+            if payloadType == "item_completed",
+               ["user_message", "agent_message", "reasoning", "plan", "context_compaction"].contains(eventType) {
+                return
+            }
             guard !Self.isContextOnly(eventType: eventType, role: role) else { return }
             guard events.count < TraceLimits.maxSteps else {
                 capped = true
                 return
             }
 
-            let embeddedPayload = Self.embeddedPayload(in: payload)
-            let toolName = JSONLineSupport.firstString(in: payload, keys: ["name", "tool_name", "toolName"])
-            let callID = JSONLineSupport.firstString(in: payload, keys: ["call_id", "callId"])
+            let diagnosticPayload = completedItem ?? payload
+            let embeddedPayload = Self.embeddedPayload(in: diagnosticPayload) ?? Self.embeddedPayload(in: payload)
+            let toolName = JSONLineSupport.firstString(in: diagnosticPayload as Any, keys: ["name", "tool_name", "toolName", "tool"])
+            let callID = JSONLineSupport.firstString(in: diagnosticPayload as Any, keys: ["call_id", "callId", "id"])
             if let callID, let toolName { toolNamesByCallID[callID] = toolName }
             let resolvedToolName = toolName ?? callID.flatMap { toolNamesByCallID[$0] }
-            let text = Self.summary(payload: payload, embeddedPayload: embeddedPayload, eventType: eventType)
+            let text = Self.summary(payload: diagnosticPayload, embeddedPayload: embeddedPayload, eventType: eventType)
             if eventType == "user_message" {
                 hasCanonicalUserMessage = true
                 if canonicalTitle == nil, !text.isEmpty { canonicalTitle = text }
             }
-            let path = TraceLimits.bounded(JSONLineSupport.firstPath(in: embeddedPayload ?? payload), to: TraceLimits.path)
-            let command = Self.command(payload: payload, embeddedPayload: embeddedPayload, toolName: resolvedToolName)
-            let exitCode = JSONLineSupport.firstInteger(in: embeddedPayload ?? payload, keys: ["exit_code", "exitCode", "code"])
-            let kind = Self.kind(for: eventType, role: role, payload: payload, text: text, command: command)
+            let fileChanges = JSONLineSupport.fileChanges(in: diagnosticPayload, eventType: eventType)
+            let path = TraceLimits.bounded(fileChanges.first?.path ?? JSONLineSupport.firstPath(in: embeddedPayload ?? diagnosticPayload), to: TraceLimits.path)
+            let command = Self.command(payload: diagnosticPayload, embeddedPayload: embeddedPayload, toolName: resolvedToolName)
+            let exitCode = JSONLineSupport.firstInteger(in: embeddedPayload ?? diagnosticPayload, keys: ["exit_code", "exitCode", "code"])
+            let kind = Self.kind(for: eventType, role: role, payload: diagnosticPayload, text: text, command: command)
             let hasError = eventType.contains("error")
-                || JSONLineSupport.isTruthyError(payload["error"])
+                || JSONLineSupport.hasFailure(in: diagnosticPayload)
                 || JSONLineSupport.isTruthyError(embeddedPayload?["error"])
                 || JSONLineSupport.isTruthyError(embeddedPayload?["isError"])
                 || exitCode.map { $0 != 0 } == true
                 || kind == .error
-            let stepTitle = Self.title(for: kind, eventType: eventType, path: path, toolName: resolvedToolName, payload: payload)
+            let stepTitle = Self.title(
+                for: kind,
+                eventType: eventType,
+                path: path,
+                toolName: resolvedToolName,
+                command: command,
+                fileChangeCount: fileChanges.count,
+                hasError: hasError,
+                payload: diagnosticPayload
+            )
 
             events.append(RawEvent(
                 lineIndex: lineIndex,
@@ -132,8 +157,10 @@ struct CodexSessionParser {
                 error: hasError,
                 command: command,
                 exitCode: exitCode,
-                tokenCount: JSONLineSupport.tokenCount(in: payload),
-                fileChanges: JSONLineSupport.fileChanges(in: payload, eventType: eventType)
+                tokenCount: JSONLineSupport.tokenCount(in: diagnosticPayload),
+                toolCallID: callID,
+                toolName: resolvedToolName,
+                fileChanges: fileChanges
             ))
         }
 
@@ -210,6 +237,8 @@ struct CodexSessionParser {
                 filePath: event.path,
                 exitCode: event.exitCode,
                 tokenCount: event.tokenCount,
+                toolCallID: event.toolCallID,
+                toolName: event.toolName,
                 fileChanges: event.fileChanges
             )
         }
@@ -235,6 +264,10 @@ struct CodexSessionParser {
 
     private static func kind(for eventType: String, role: String?, payload: [String: Any], text: String, command: String?) -> StepKind {
         if eventType.contains("error") || JSONLineSupport.isTruthyError(payload["error"]) { return .error }
+        if eventType.contains("tool_call"),
+           eventType.hasSuffix("_end") || eventType.hasSuffix("_output") || payload["result"] != nil {
+            return .toolResult
+        }
         if eventType.contains("function_call_output") || eventType.contains("tool_result") || eventType.contains("command_execution_output") { return .toolResult }
         let toolName = JSONLineSupport.firstString(in: payload, keys: ["name", "tool_name", "toolName"])?.lowercased()
         let toolLeaf = toolName?.split(separator: ".").last.map(String.init)
@@ -253,6 +286,9 @@ struct CodexSessionParser {
         eventType: String,
         path: String?,
         toolName: String?,
+        command: String?,
+        fileChangeCount: Int,
+        hasError: Bool,
         payload: [String: Any]
     ) -> String {
         switch kind {
@@ -260,10 +296,18 @@ struct CodexSessionParser {
         case .assistant:
             return JSONLineSupport.firstString(in: payload, keys: ["phase"]) == "commentary" ? "Agent update" : "Agent response"
         case .thought: return "Agent reasoning"
-        case .shellCommand: return toolName.map { "Run \(displayName(for: $0))" } ?? "Run shell command"
+        case .shellCommand:
+            if hasError { return command.map { "Failed: \(commandLabel($0))" } ?? "Command failed" }
+            return command.map { "Run \(commandLabel($0))" }
+                ?? toolName.map { "Run \(displayName(for: $0))" }
+                ?? "Run shell command"
         case .toolCall: return toolName.map { "Call \(displayName(for: $0))" } ?? "Tool call"
-        case .toolResult: return toolName.map { "\(displayName(for: $0)) result" } ?? "Tool result"
-        case .fileChange: return path ?? "File change"
+        case .toolResult:
+            if hasError { return toolName.map { "\(displayName(for: $0)) failed" } ?? "Tool failed" }
+            return toolName.map { "\(displayName(for: $0)) result" } ?? "Tool result"
+        case .fileChange:
+            if fileChangeCount > 1 { return "Changed \(fileChangeCount) files" }
+            return path.map { "Changed \(URL(fileURLWithPath: $0).lastPathComponent)" } ?? "File change"
         case .error: return "Error"
         case .system: return eventType.replacingOccurrences(of: "_", with: " ").capitalized
         }
@@ -311,14 +355,49 @@ struct CodexSessionParser {
 
     private static func command(payload: [String: Any], embeddedPayload: [String: Any]?, toolName: String?) -> String? {
         if let embeddedPayload,
-           let command = JSONLineSupport.firstString(in: embeddedPayload as Any, keys: ["command", "cmd", "input"]) {
+           let command = commandValue(JSONLineSupport.firstValue(in: embeddedPayload, keys: ["command", "cmd", "input"])) {
             return TraceLimits.bounded(command, to: TraceLimits.command)
         }
         if ["shell", "exec", "terminal", "run_command"].contains(toolName?.lowercased()),
-           let input = JSONLineSupport.firstString(in: payload, keys: ["input", "arguments"]) {
+           let input = commandValue(JSONLineSupport.firstValue(in: payload, keys: ["input", "arguments"])) {
             return TraceLimits.bounded(input, to: TraceLimits.command)
         }
-        return TraceLimits.bounded(JSONLineSupport.firstString(in: payload, keys: ["command", "cmd"]), to: TraceLimits.command)
+        return TraceLimits.bounded(
+            commandValue(JSONLineSupport.firstValue(in: payload, keys: ["command", "cmd"])),
+            to: TraceLimits.command
+        )
+    }
+
+    private static func commandValue(_ value: Any?) -> String? {
+        if let string = value as? String {
+            if let data = string.data(using: .utf8),
+               let object = try? JSONSerialization.jsonObject(with: data),
+               let dictionary = object as? [String: Any],
+               let nested = commandValue(JSONLineSupport.firstValue(in: dictionary, keys: ["command", "cmd", "input"])) {
+                return nested
+            }
+            return string
+        }
+        if let strings = value as? [String] { return strings.joined(separator: " ") }
+        if let array = value as? [Any] {
+            let components = array.compactMap { JSONLineSupport.string($0) }
+            return components.isEmpty ? nil : components.joined(separator: " ")
+        }
+        return nil
+    }
+
+    private static func commandLabel(_ command: String) -> String {
+        let compact = JSONLineSupport.compact(command, limit: 72)
+        return compact.isEmpty ? "command" : compact
+    }
+
+    private static func normalizedEventType(_ value: String) -> String {
+        value.unicodeScalars.reduce(into: "") { result, scalar in
+            if CharacterSet.uppercaseLetters.contains(scalar), !result.isEmpty {
+                result.append("_")
+            }
+            result.append(String(scalar).lowercased())
+        }
     }
 
     private static func displayName(for toolName: String) -> String {

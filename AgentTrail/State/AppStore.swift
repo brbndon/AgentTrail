@@ -8,7 +8,7 @@ import os
 @Observable
 final class AppStore {
     static let sessionPageSize = 30
-    private static let codexNormalizationVersion = 2
+    private static let codexNormalizationVersion = 3
     private static let codexNormalizationVersionKey = "CodexNormalizationVersion"
 
     var isLoading = false
