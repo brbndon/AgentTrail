@@ -24,9 +24,13 @@ enum JSONLineSupport {
     @discardableResult
     static func forEachDictionary(
         at url: URL,
+        byteRange: Range<UInt64>? = nil,
         body: (Int, [String: Any], Data) async throws -> Void
     ) async throws -> JSONLScanStats {
         let handle = try FileHandle(forReadingFrom: url)
+        let startOffset = byteRange?.lowerBound ?? 0
+        let endOffset = byteRange?.upperBound
+        try handle.seek(toOffset: startOffset)
 
         var line = Data()
         line.reserveCapacity(min(readChunkSize, maximumLineBytes))
@@ -69,8 +73,15 @@ enum JSONLineSupport {
 
         var operationError: Error?
         do {
-            while let chunk = try handle.read(upToCount: readChunkSize), !chunk.isEmpty {
+            var offset = startOffset
+            while endOffset.map({ offset < $0 }) ?? true {
                 try Task.checkCancellation()
+                let requestedCount = endOffset.map { min(readChunkSize, Int($0 - offset)) } ?? readChunkSize
+                guard requestedCount > 0,
+                      let chunk = try handle.read(upToCount: requestedCount),
+                      !chunk.isEmpty
+                else { break }
+                offset += UInt64(chunk.count)
                 for byte in chunk {
                     if byte == 0x0A {
                         try await processCurrentLine()

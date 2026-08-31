@@ -1,7 +1,7 @@
 import CryptoKit
 import Foundation
 
-struct ParsedFileChange: Sendable {
+struct ParsedFileChange: Codable, Sendable {
     let path: String
     let changeType: String
     let beforeHash: String?
@@ -24,7 +24,7 @@ struct ParsedFileChange: Sendable {
 }
 
 /// The lightweight value produced by an agent parser before SwiftData insertion.
-struct ParsedStep: Sendable {
+struct ParsedStep: Codable, Sendable {
     let identity: String
     let index: Int
     let kind: StepKind
@@ -74,7 +74,7 @@ struct ParsedStep: Sendable {
 }
 
 /// A complete normalized session ready to be persisted on the main actor.
-struct ParsedSession: Sendable {
+struct ParsedSession: Codable, Sendable {
     let sourceKey: String
     let agentType: AgentType
     let title: String

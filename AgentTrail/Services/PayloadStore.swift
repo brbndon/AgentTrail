@@ -45,7 +45,7 @@ actor PayloadStore {
     static let maximumPayloadBytes = 64 * 1024 * 1024
     static let maximumReadBytes = 64 * 1024 * 1024
 
-    private let rootURL: URL
+    nonisolated let rootURL: URL
     private let logger = Logger(subsystem: "com.brandon.AgentTrail", category: "payload-store")
     private var liveReferences: Set<String> = []
     private var protectedBranchReferences: Set<String> = []

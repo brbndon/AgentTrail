@@ -125,11 +125,19 @@ struct IngestionProgress: Sendable, Equatable {
 actor IngestionService {
     private let directories: AgentDirectories
     private let payloadStore: PayloadStore
+    private let codexCheckpointStore: CodexCheckpointStore
     private let logger = Logger(subsystem: "com.brandon.AgentTrail", category: "ingestion")
 
-    init(directories: AgentDirectories = AgentDirectories(), payloadStore: PayloadStore = PayloadStore()) {
+    init(
+        directories: AgentDirectories = AgentDirectories(),
+        payloadStore: PayloadStore = PayloadStore(),
+        codexCheckpointStore: CodexCheckpointStore? = nil
+    ) {
         self.directories = directories
         self.payloadStore = payloadStore
+        self.codexCheckpointStore = codexCheckpointStore ?? CodexCheckpointStore(
+            rootURL: payloadStore.rootURL.deletingLastPathComponent().appendingPathComponent("Checkpoints", isDirectory: true)
+        )
     }
 
     /// Returns parse results and source health. A failed individual source is
@@ -300,7 +308,11 @@ actor IngestionService {
                 let session: ParsedSession?
                 switch item {
                 case .codex(let url):
-                    session = try await codexParser.parse(fileURL: url, payloadStore: payloadStore)
+                    session = try await codexParser.parseIncrementally(
+                        fileURL: url,
+                        payloadStore: payloadStore,
+                        checkpointStore: codexCheckpointStore
+                    ).session
                 case .grok(let url):
                     session = try await grokParser.parse(directory: url, payloadStore: payloadStore)
                 case .cursor(let url):

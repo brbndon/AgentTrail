@@ -23,11 +23,18 @@ struct CodexSessionParser {
         }
     }
 
-    func parse(fileURL: URL, payloadStore: PayloadStore) async throws -> ParsedSession? {
+    func parse(
+        fileURL: URL,
+        payloadStore: PayloadStore,
+        byteRange: Range<UInt64>? = nil,
+        sourceIdentityURL: URL? = nil,
+        sourceModificationDate: Date? = nil
+    ) async throws -> ParsedSession? {
         guard Self.isRegularNonSymlink(fileURL) else { throw TraceParserError.unavailable(fileURL) }
-        let sourcePath = fileURL.standardizedFileURL.path
+        let identityURL = sourceIdentityURL ?? fileURL
+        let sourcePath = identityURL.standardizedFileURL.path
         let sourceKey = "codex:\(sourcePath)"
-        let modificationDate = fileURL.modificationDate
+        let modificationDate = sourceModificationDate ?? fileURL.modificationDate
 
         struct RawEvent {
             let lineIndex: Int
@@ -58,7 +65,7 @@ struct CodexSessionParser {
         var toolNamesByCallID: [String: String] = [:]
         var events: [RawEvent] = []
         var capped = false
-        let firstStats = try await JSONLineSupport.forEachDictionary(at: fileURL) { lineIndex, record, rawPayload in
+        let firstStats = try await JSONLineSupport.forEachDictionary(at: fileURL, byteRange: byteRange) { lineIndex, record, rawPayload in
             try Task.checkCancellation()
             let payload = JSONLineSupport.dictionary(record["payload"]) ?? record
             let outerType = JSONLineSupport.string(JSONLineSupport.firstValue(in: record, keys: ["type"]))
@@ -159,7 +166,7 @@ struct CodexSessionParser {
         // Second pass persists payloads and detects mid-scan mutation: every
         // first-pass event line must reappear with the same digest, and the
         // overall valid-record count must match.
-        let secondStats = try await JSONLineSupport.forEachDictionary(at: fileURL) { lineIndex, _, rawPayload in
+        let secondStats = try await JSONLineSupport.forEachDictionary(at: fileURL, byteRange: byteRange) { lineIndex, _, rawPayload in
             try Task.checkCancellation()
             guard let event = eventsByLine[lineIndex] else { return }
             guard StableTraceIdentity.payloadDigest(rawPayload) == event.digest else {

@@ -4,6 +4,102 @@ import XCTest
 @testable import AgentTrail
 
 final class ParserTests: XCTestCase {
+    func testCodexIncrementalCheckpointReadsOnlyGrowthAndDefersTrailingPartialRecord() async throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("active.jsonl")
+        let initial = #"{"type":"event_msg","payload":{"type":"user_message","message":"Sanitized request"}}"# + "\n"
+            + #"{"type":"event_msg","payload":{"type":"agent_message","message":"Initial response"}}"# + "\n"
+        try initial.write(to: file, atomically: true, encoding: .utf8)
+        let payloadStore = PayloadStore(rootURL: root.appendingPathComponent("Blobs"))
+        let checkpointStore = CodexCheckpointStore(rootURL: root.appendingPathComponent("Checkpoints"))
+        let parser = CodexSessionParser()
+
+        let first = try await parser.parseIncrementally(fileURL: file, payloadStore: payloadStore, checkpointStore: checkpointStore)
+        XCTAssertNil(first.resumedFromOffset)
+        XCTAssertEqual(first.bytesRead, UInt64(Data(initial.utf8).count))
+        XCTAssertEqual(first.session?.steps.count, 2)
+
+        let unchanged = try await parser.parseIncrementally(fileURL: file, payloadStore: payloadStore, checkpointStore: checkpointStore)
+        XCTAssertEqual(unchanged.bytesRead, 0)
+        XCTAssertEqual(unchanged.resumedFromOffset, UInt64(Data(initial.utf8).count))
+        XCTAssertEqual(unchanged.session?.steps.map(\.identity), first.session?.steps.map(\.identity))
+
+        let completeGrowth = #"{"type":"event_msg","payload":{"type":"agent_message","message":"Appended response"}}"# + "\n"
+        try Self.append(Data((completeGrowth + #"{"type":"event_msg","payload":{"type":"agent_"#).utf8), to: file)
+        let partial = try await parser.parseIncrementally(fileURL: file, payloadStore: payloadStore, checkpointStore: checkpointStore)
+        XCTAssertTrue(partial.hadTrailingPartialRecord)
+        XCTAssertEqual(partial.bytesRead, UInt64(Data(completeGrowth.utf8).count))
+        XCTAssertEqual(partial.session?.steps.count, 3)
+
+        let completedTail = #"message","message":"Completed later"}}"# + "\n"
+        try Self.append(Data(completedTail.utf8), to: file)
+        let completed = try await parser.parseIncrementally(fileURL: file, payloadStore: payloadStore, checkpointStore: checkpointStore)
+        XCTAssertFalse(completed.hadTrailingPartialRecord)
+        XCTAssertEqual(completed.session?.steps.count, 4)
+        XCTAssertEqual(Set(completed.session?.steps.map(\.identity) ?? []).count, 4)
+    }
+
+    func testCodexIncrementalCheckpointResetsAfterTruncationAndSameInodeRewrite() async throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("rewritten.jsonl")
+        let original = #"{"type":"message","role":"user","content":"Original request"}"# + "\n"
+            + #"{"type":"message","role":"assistant","content":"Original response"}"# + "\n"
+        try original.write(to: file, atomically: true, encoding: .utf8)
+        let payloadStore = PayloadStore(rootURL: root.appendingPathComponent("Blobs"))
+        let checkpointStore = CodexCheckpointStore(rootURL: root.appendingPathComponent("Checkpoints"))
+        let parser = CodexSessionParser()
+        _ = try await parser.parseIncrementally(fileURL: file, payloadStore: payloadStore, checkpointStore: checkpointStore)
+
+        let replacement = #"{"type":"message","role":"user","content":"Replacement"}"# + "\n"
+        let handle = try FileHandle(forWritingTo: file)
+        try handle.truncate(atOffset: 0)
+        try handle.write(contentsOf: Data(replacement.utf8))
+        try handle.close()
+
+        let truncated = try await parser.parseIncrementally(fileURL: file, payloadStore: payloadStore, checkpointStore: checkpointStore)
+        XCTAssertTrue(truncated.checkpointWasReset)
+        XCTAssertNil(truncated.resumedFromOffset)
+        XCTAssertEqual(truncated.session?.steps.map(\.summary), ["Replacement"])
+
+        let sameSizeRewrite = #"{"type":"message","role":"user","content":"Other value"}"# + "\n"
+        XCTAssertEqual(Data(replacement.utf8).count, Data(sameSizeRewrite.utf8).count)
+        let rewriteHandle = try FileHandle(forWritingTo: file)
+        try rewriteHandle.seek(toOffset: 0)
+        try rewriteHandle.write(contentsOf: Data(sameSizeRewrite.utf8))
+        try rewriteHandle.close()
+        let rewritten = try await parser.parseIncrementally(fileURL: file, payloadStore: payloadStore, checkpointStore: checkpointStore)
+        XCTAssertTrue(rewritten.checkpointWasReset)
+        XCTAssertEqual(rewritten.session?.steps.map(\.summary), ["Other value"])
+    }
+
+    func testCodexIncrementalCheckpointDoesNotAdvanceWhenFileChangesDuringImport() async throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("changing.jsonl")
+        let firstLine = #"{"type":"message","role":"user","content":"First"}"# + "\n"
+        let secondLine = #"{"type":"message","role":"assistant","content":"Second"}"# + "\n"
+        try firstLine.write(to: file, atomically: true, encoding: .utf8)
+        let checkpointStore = CodexCheckpointStore(rootURL: root.appendingPathComponent("Checkpoints"))
+        let payloadStore = PayloadStore(rootURL: root.appendingPathComponent("Blobs"))
+        let changingParser = CodexSessionParser(betweenPasses: {
+            try Self.append(Data(secondLine.utf8), to: file)
+        })
+
+        await assertThrowsAsync {
+            _ = try await changingParser.parseIncrementally(fileURL: file, payloadStore: payloadStore, checkpointStore: checkpointStore)
+        }
+
+        let recovered = try await CodexSessionParser().parseIncrementally(
+            fileURL: file,
+            payloadStore: payloadStore,
+            checkpointStore: checkpointStore
+        )
+        XCTAssertNil(recovered.resumedFromOffset)
+        XCTAssertEqual(recovered.session?.steps.count, 2)
+    }
+
     func testApplicationSupportLeaseExcludesConcurrentOwnersAndReleasesCleanly() throws {
         let root = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -912,6 +1008,13 @@ final class ParserTests: XCTestCase {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("AgentTrailTests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
+    }
+
+    private static func append(_ data: Data, to file: URL) throws {
+        let handle = try FileHandle(forWritingTo: file)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: data)
+        try handle.close()
     }
 
     private func awaitTaskSleep(milliseconds: UInt64) throws {
