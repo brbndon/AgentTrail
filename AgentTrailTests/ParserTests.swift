@@ -4,6 +4,44 @@ import XCTest
 @testable import AgentTrail
 
 final class ParserTests: XCTestCase {
+    func testApplicationSupportLeaseExcludesConcurrentOwnersAndReleasesCleanly() throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let firstResult = ApplicationSupportLease.acquire(in: root)
+        guard case .acquired(let firstLease) = firstResult else {
+            return XCTFail("Expected the first process lease to be acquired")
+        }
+
+        let secondResult = ApplicationSupportLease.acquire(in: root)
+        guard case .ownedByAnotherProcess(let owner) = secondResult else {
+            return XCTFail("Expected a second owner to be rejected")
+        }
+        XCTAssertEqual(owner?.processIdentifier, ProcessInfo.processInfo.processIdentifier)
+
+        let lockURL = root.appendingPathComponent(ApplicationSupportLease.lockFileName)
+        let attributes = try FileManager.default.attributesOfItem(atPath: lockURL.path)
+        XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o600)
+
+        firstLease.release()
+        guard case .acquired(let replacementLease) = ApplicationSupportLease.acquire(in: root) else {
+            return XCTFail("Expected the lease to be available after release")
+        }
+        replacementLease.release()
+    }
+
+    func testApplicationSupportLeaseFailsClosedWhenSupportPathIsAFile() throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let supportFile = root.appendingPathComponent("AgentTrail")
+        try Data("occupied".utf8).write(to: supportFile)
+
+        guard case .unavailable(let message) = ApplicationSupportLease.acquire(in: supportFile) else {
+            return XCTFail("Expected an unusable support path to fail closed")
+        }
+        XCTAssertTrue(message.contains("Application Support"))
+    }
+
     func testCodexParserNormalizesMessagesAndMalformedTrailingLines() async throws {
         let root = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }

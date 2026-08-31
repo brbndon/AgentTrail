@@ -17,6 +17,7 @@
 		4271D482D61F85C46509C1A6 /* TraceKindBadge.swift in Sources */ = {isa = PBXBuildFile; fileRef = E07A1E9FFCA3CC1E9A6B8B32 /* TraceKindBadge.swift */; };
 		448E71E6D8CA1E8468138136 /* IngestionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 404CEB9DC046841382F31CC9 /* IngestionService.swift */; };
 		5321E4F057D8572952F8E334 /* CodexSessionParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = B11FE969BD1C7FE9406D0612 /* CodexSessionParser.swift */; };
+		624056BDB9DEFC7274BA2025 /* LibraryUnavailableView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3C9204E46540C4C9BC01CF85 /* LibraryUnavailableView.swift */; };
 		6DD7B32B205B7FAE827CD5BF /* AgentTrailApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EF8768FD89503B6C6795438 /* AgentTrailApp.swift */; };
 		7C071581AA46597BE41B0731 /* TimelineFilter.swift in Sources */ = {isa = PBXBuildFile; fileRef = EDA9B0D5C4EED46B5152C9E3 /* TimelineFilter.swift */; };
 		846A5112541E7659C0F8395A /* AppStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C9B1A43E8A88DB3E30220AA /* AppStore.swift */; };
@@ -27,6 +28,7 @@
 		B0EE3AB470F1CBD99F9AC36D /* FSEventWatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7E5D8B00270BD0E04AA126F /* FSEventWatcher.swift */; };
 		B12F41A480C17F7D47E25B1F /* SessionsListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F7B3D99C8C36129037C0A34 /* SessionsListView.swift */; };
 		B79ADFA83839A9E039E32CF6 /* SessionOverviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 016DF9AF1B8B9A0798D049E5 /* SessionOverviewView.swift */; };
+		BB7DF69721E1C6978FBE929D /* ApplicationSupportLease.swift in Sources */ = {isa = PBXBuildFile; fileRef = F21B6A06E8ED1B6599E3A14E /* ApplicationSupportLease.swift */; };
 		C2A90BD56ACB993422433259 /* BranchSessionSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = B37AFDB7BA1A4B74EFC9D3C5 /* BranchSessionSheet.swift */; };
 		CCB8E6387E88B663D2AC55A8 /* TraceModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB586109D183D2EF2BE6EA41 /* TraceModels.swift */; };
 		DB72B9156CFE6D7A52A58164 /* JSONLineSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 881B58244A4B042421B6F4CA /* JSONLineSupport.swift */; };
@@ -51,6 +53,7 @@
 		2ED43D4527ABF10506E667E1 /* GrokBuildSessionParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GrokBuildSessionParser.swift; sourceTree = "<group>"; };
 		30C5BCEBC97D2537E58C9F6B /* StepDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StepDetailView.swift; sourceTree = "<group>"; };
 		38229118E732DD9563BEE4BA /* AgentTrail.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AgentTrail.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		3C9204E46540C4C9BC01CF85 /* LibraryUnavailableView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryUnavailableView.swift; sourceTree = "<group>"; };
 		404CEB9DC046841382F31CC9 /* IngestionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IngestionService.swift; sourceTree = "<group>"; };
 		4A3894B342218CAB2CCBAD62 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		4B167E3D8379260A3A8A9096 /* Notifications.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Notifications.swift; sourceTree = "<group>"; };
@@ -73,6 +76,7 @@
 		E062DD9245580FDBEF4D7EB5 /* AgentTrailTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AgentTrailTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		E07A1E9FFCA3CC1E9A6B8B32 /* TraceKindBadge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TraceKindBadge.swift; sourceTree = "<group>"; };
 		EDA9B0D5C4EED46B5152C9E3 /* TimelineFilter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimelineFilter.swift; sourceTree = "<group>"; };
+		F21B6A06E8ED1B6599E3A14E /* ApplicationSupportLease.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApplicationSupportLease.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -136,6 +140,7 @@
 			isa = PBXGroup;
 			children = (
 				BDAF6C9A0B1B46CBF1B4E5E3 /* AgentIngestors */,
+				F21B6A06E8ED1B6599E3A14E /* ApplicationSupportLease.swift */,
 				B7E5D8B00270BD0E04AA126F /* FSEventWatcher.swift */,
 				404CEB9DC046841382F31CC9 /* IngestionService.swift */,
 				85EF32D5D67D59C5293BB08E /* PayloadStore.swift */,
@@ -158,6 +163,7 @@
 				DCACC64B18A68E2E52AACE59 /* AgentTrailCommands.swift */,
 				66AB886A4C5795372249A8CB /* BranchGraphView.swift */,
 				B37AFDB7BA1A4B74EFC9D3C5 /* BranchSessionSheet.swift */,
+				3C9204E46540C4C9BC01CF85 /* LibraryUnavailableView.swift */,
 				8F1200766DB0C25C0D249513 /* RootView.swift */,
 				016DF9AF1B8B9A0798D049E5 /* SessionOverviewView.swift */,
 				5F7B3D99C8C36129037C0A34 /* SessionsListView.swift */,
@@ -279,6 +285,7 @@
 				AE293D8E8528456D03517011 /* AgentTrailCommands.swift in Sources */,
 				3655BC17A3FB27BBC82D73CE /* AgentType.swift in Sources */,
 				846A5112541E7659C0F8395A /* AppStore.swift in Sources */,
+				BB7DF69721E1C6978FBE929D /* ApplicationSupportLease.swift in Sources */,
 				DFEA7B44D2F6F3C34C6E9F13 /* BranchGraphView.swift in Sources */,
 				C2A90BD56ACB993422433259 /* BranchSessionSheet.swift in Sources */,
 				5321E4F057D8572952F8E334 /* CodexSessionParser.swift in Sources */,
@@ -287,6 +294,7 @@
 				3FEA60DEB09E7BCEF0281140 /* GrokBuildSessionParser.swift in Sources */,
 				448E71E6D8CA1E8468138136 /* IngestionService.swift in Sources */,
 				DB72B9156CFE6D7A52A58164 /* JSONLineSupport.swift in Sources */,
+				624056BDB9DEFC7274BA2025 /* LibraryUnavailableView.swift in Sources */,
 				93C719F6CEFDA7560533741E /* Notifications.swift in Sources */,
 				0B6E7188283B5AF1E7D2C86E /* PayloadStore.swift in Sources */,
 				F38B754AE432A48642E429F0 /* RootView.swift in Sources */,

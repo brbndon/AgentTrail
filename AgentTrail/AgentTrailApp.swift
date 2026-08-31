@@ -239,15 +239,50 @@ struct AgentTrailApp: App {
     private let directories: AgentDirectories
     private let payloadStore: PayloadStore
     private let persistenceMode: PersistenceMode
+    private let applicationSupportLease: ApplicationSupportLease?
+    private let libraryAccessIssue: LibraryAccessIssue?
 
     init() {
         let directories = AgentTrailRuntime.directories()
         let payloadStore = AgentTrailRuntime.payloadStore()
-        let persistence = AgentTrailPersistence.makeContainer(isTestHost: AgentTrailRuntime.isTestHost)
+        let persistence: AgentTrailPersistenceResult
+        let applicationSupportLease: ApplicationSupportLease?
+        let libraryAccessIssue: LibraryAccessIssue?
+
+        if AgentTrailRuntime.isTestHost {
+            persistence = AgentTrailPersistence.makeContainer(isTestHost: true)
+            applicationSupportLease = nil
+            libraryAccessIssue = nil
+        } else {
+            switch ApplicationSupportLease.acquire(in: AgentTrailPersistence.applicationSupportURL) {
+            case .acquired(let lease):
+                applicationSupportLease = lease
+                libraryAccessIssue = nil
+                persistence = AgentTrailPersistence.makeContainer(isTestHost: false)
+            case .ownedByAnotherProcess(let owner):
+                applicationSupportLease = nil
+                libraryAccessIssue = .ownedByAnotherProcess(owner)
+                persistence = AgentTrailPersistenceResult(
+                    container: nil,
+                    mode: .unavailable,
+                    startupMessage: "Another AgentTrail copy currently owns the local library."
+                )
+            case .unavailable(let message):
+                applicationSupportLease = nil
+                libraryAccessIssue = .unavailable(message)
+                persistence = AgentTrailPersistenceResult(
+                    container: nil,
+                    mode: .unavailable,
+                    startupMessage: message
+                )
+            }
+        }
         self.directories = directories
         self.payloadStore = payloadStore
         self.modelContainer = persistence.container
         self.persistenceMode = persistence.mode
+        self.applicationSupportLease = applicationSupportLease
+        self.libraryAccessIssue = libraryAccessIssue
         // Sticky warning for any degraded durable-store outcome so refresh cannot
         // overwrite “you may not be on the primary healthy store” messaging.
         let stickyWarning: String? = {
@@ -269,7 +304,9 @@ struct AgentTrailApp: App {
 
     var body: some Scene {
         WindowGroup {
-            if let modelContainer {
+            if let libraryAccessIssue {
+                LibraryUnavailableView(issue: libraryAccessIssue)
+            } else if let modelContainer {
                 RootView()
                     .environment(appStore)
                     .modelContainer(modelContainer)
@@ -288,8 +325,13 @@ struct AgentTrailApp: App {
         }
 
         Settings {
-            SettingsView(directories: directories, payloadStore: payloadStore)
-                .frame(minWidth: 440, idealWidth: 520, minHeight: 300, idealHeight: 360)
+            if let libraryAccessIssue {
+                LibraryUnavailableView(issue: libraryAccessIssue)
+                    .frame(minWidth: 440, idealWidth: 520, minHeight: 300, idealHeight: 360)
+            } else {
+                SettingsView(directories: directories, payloadStore: payloadStore)
+                    .frame(minWidth: 440, idealWidth: 520, minHeight: 300, idealHeight: 360)
+            }
         }
     }
 }

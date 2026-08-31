@@ -12,6 +12,7 @@ AgentTrail is a local macOS viewer for understanding what coding agents did insi
 - Links tool results back to their call IDs so commands, tool names, failures, and exit codes are easier to diagnose.
 - Stores normalized metadata in SwiftData and raw event payloads in private local files.
 - Watches `~/.codex/sessions` for active-session updates.
+- Holds an exclusive lease on the shared Application Support library so installed, disk-image, and Xcode builds cannot import into it concurrently.
 
 Grok Build and Cursor parsers still exist in the source tree, but the shipping workflow does not scan them while their formats and UX are being stabilized.
 
@@ -36,6 +37,8 @@ AgentTrail does not use a network service. It reads local session files and writ
 ```
 
 Raw payload previews can include prompts, command output, and file paths from the original session. Treat exported screenshots or copied payloads as potentially sensitive.
+
+Installed, disk-image, and Xcode development copies use this same library. Launch Services prevents ordinary duplicate launches; if another copy still starts (for example, an older build or an explicit development launch), the newer copy stays read-only, explains the conflict, and offers to bring the owning copy forward. Quit the owning copy before switching builds; AgentTrail never resets the library to resolve an ownership conflict.
 
 ## How Codex import works
 
