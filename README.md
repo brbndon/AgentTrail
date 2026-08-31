@@ -7,6 +7,7 @@ AgentTrail is a local macOS viewer for understanding what coding agents did insi
 - Loads the 30 most recently updated Codex threads on launch.
 - Sorts threads newest-first by source modification time.
 - Loads older history in explicit 30-thread pages with **Load 30 More**.
+- Groups each globally newest-first page by project and shows total imported thread counts without loading full session histories.
 - Uses Codex `session_meta` and `turn_context` records to identify the workspace.
 - Uses canonical `user_message` and `agent_message` records for clean task titles and conversation steps.
 - Links tool results back to their call IDs (including across incremental refreshes) so commands, tool names, failures, and exit codes are easier to diagnose.
@@ -59,6 +60,5 @@ Malformed complete records degrade one session instead of blocking the whole lib
 
 ## Near-term roadmap
 
-- Add project-level grouping and per-project thread counts in the sidebar.
 - Add opt-in export with automatic secret and home-path redaction.
 - Re-enable Grok Build and Cursor only after their pagination, metadata, and regression coverage match the Codex path.

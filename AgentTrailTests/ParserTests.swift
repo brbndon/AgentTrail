@@ -1060,13 +1060,36 @@ final class ParserTests: XCTestCase {
         XCTAssertEqual(appStore.totalAvailableSessionCount, 35)
         XCTAssertTrue(appStore.hasMoreSessions)
         XCTAssertEqual(try context.fetchCount(FetchDescriptor<SessionRecord>()), 30)
+        XCTAssertEqual(appStore.projectSessionCounts["codex:unknown"], 30)
 
         appStore.loadMoreSessions()
         try await waitForRefresh(appStore)
         XCTAssertEqual(appStore.loadedSessionLimit, 35)
         XCTAssertFalse(appStore.hasMoreSessions)
         XCTAssertEqual(try context.fetchCount(FetchDescriptor<SessionRecord>()), 35)
+        XCTAssertEqual(appStore.projectSessionCounts["codex:unknown"], 35)
         appStore.stopWatching()
+    }
+
+    func testProjectGroupingPreservesGlobalPageOrderAndUsesDatabaseCounts() {
+        let firstProject = ProjectRecord(identity: "path:/workspace/First", path: "/workspace/First", name: "First")
+        let secondProject = ProjectRecord(identity: "path:/workspace/Second", path: "/workspace/Second", name: "Second")
+        let sessions = [
+            SessionRecord(sourceKey: "codex:newest", agentType: .codex, title: "Newest", startDate: .now, endDate: nil, workingDirectory: firstProject.path, sourcePath: "/sessions/newest.jsonl", sourceModifiedAt: .now, project: firstProject),
+            SessionRecord(sourceKey: "codex:middle", agentType: .codex, title: "Middle", startDate: .now, endDate: nil, workingDirectory: secondProject.path, sourcePath: "/sessions/middle.jsonl", sourceModifiedAt: .now.addingTimeInterval(-1), project: secondProject),
+            SessionRecord(sourceKey: "codex:oldest", agentType: .codex, title: "Oldest", startDate: .now, endDate: nil, workingDirectory: firstProject.path, sourcePath: "/sessions/oldest.jsonl", sourceModifiedAt: .now.addingTimeInterval(-2), project: firstProject)
+        ]
+
+        let groups = SessionProjectGrouping.groups(
+            sessions: sessions,
+            totalCounts: [firstProject.identity: 14, secondProject.identity: 3]
+        )
+
+        XCTAssertEqual(groups.map(\.id), [firstProject.identity, secondProject.identity])
+        XCTAssertEqual(groups[0].sessions.map(\.title), ["Newest", "Oldest"])
+        XCTAssertEqual(groups[0].totalCount, 14)
+        XCTAssertEqual(groups[1].sessions.map(\.title), ["Middle"])
+        XCTAssertEqual(groups[1].totalCount, 3)
     }
 
     func testUnchangedSourcesAreSkippedOnSecondImport() async throws {

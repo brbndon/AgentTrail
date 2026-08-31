@@ -31,19 +31,25 @@ struct SessionsListView: View {
         }
     }
 
+    private var projectGroups: [ProjectSessionGroup] {
+        SessionProjectGrouping.groups(
+            sessions: filteredSessions,
+            totalCounts: appStore.projectSessionCounts
+        )
+    }
+
     var body: some View {
         @Bindable var appStore = appStore
 
         List(selection: $selection) {
-            ForEach(AgentType.allCases) { agentType in
-                let agentSessions = filteredSessions.filter { $0.agentType == agentType }
-                if !agentSessions.isEmpty {
-                    Section(agentType.displayName) {
-                        ForEach(agentSessions) { session in
-                            SessionRowView(session: session)
-                                .tag(session.id)
-                        }
+            ForEach(projectGroups) { group in
+                Section {
+                    ForEach(group.sessions) { session in
+                        SessionRowView(session: session)
+                            .tag(session.id)
                     }
+                } header: {
+                    ProjectSectionHeader(name: group.name, sessionCount: group.totalCount)
                 }
             }
         }
@@ -88,6 +94,65 @@ struct SessionsListView: View {
         } else {
             selection = filteredSessions.first?.id
         }
+    }
+}
+
+struct ProjectSessionGroup: Identifiable {
+    let id: String
+    let name: String
+    let totalCount: Int
+    let sessions: [SessionRecord]
+}
+
+enum SessionProjectGrouping {
+    /// The input is already the globally newest-first page from SwiftData. The
+    /// first appearance of each project therefore defines section order, while
+    /// each project's rows retain the same newest-first ordering.
+    static func groups(
+        sessions: [SessionRecord],
+        totalCounts: [String: Int]
+    ) -> [ProjectSessionGroup] {
+        var projectOrder: [String] = []
+        var names: [String: String] = [:]
+        var sessionsByProject: [String: [SessionRecord]] = [:]
+
+        for session in sessions {
+            let identity = session.project?.identity ?? "project:unknown"
+            if sessionsByProject[identity] == nil {
+                projectOrder.append(identity)
+                sessionsByProject[identity] = []
+                names[identity] = session.project?.name ?? "Unknown project"
+            }
+            sessionsByProject[identity, default: []].append(session)
+        }
+
+        return projectOrder.compactMap { identity in
+            guard let projectSessions = sessionsByProject[identity] else { return nil }
+            return ProjectSessionGroup(
+                id: identity,
+                name: names[identity] ?? "Unknown project",
+                totalCount: max(totalCounts[identity] ?? 0, projectSessions.count),
+                sessions: projectSessions
+            )
+        }
+    }
+}
+
+private struct ProjectSectionHeader: View {
+    let name: String
+    let sessionCount: Int
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Label(name, systemImage: "folder")
+                .lineLimit(1)
+            Spacer(minLength: 4)
+            Text("\(sessionCount) \(sessionCount == 1 ? "thread" : "threads")")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.tertiary)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(name), \(sessionCount) \(sessionCount == 1 ? "thread" : "threads") total")
     }
 }
 
@@ -159,10 +224,6 @@ private struct SessionRowView: View {
                 Text(session.title)
                     .font(.body)
                     .lineLimit(2)
-                Label(session.project?.name ?? "Unknown project", systemImage: "folder")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
                 HStack(spacing: 5) {
                     Text("Updated \(session.sourceModifiedAt, style: .relative)")
                     Text("·")

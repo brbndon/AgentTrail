@@ -25,6 +25,9 @@ final class AppStore {
     private(set) var isWatching = false
     private(set) var loadedSessionLimit = AppStore.sessionPageSize
     private(set) var totalAvailableSessionCount = 0
+    /// Total persisted threads per project, populated with database counts so
+    /// sidebar headers never materialize the full session history.
+    private(set) var projectSessionCounts: [String: Int] = [:]
 
     var hasMoreSessions: Bool {
         loadedSessionLimit < totalAvailableSessionCount
@@ -72,6 +75,11 @@ final class AppStore {
         modelContext = context
         guard !hasBootstrapped else { return }
         hasBootstrapped = true
+        do {
+            try refreshProjectSessionCounts(in: context)
+        } catch {
+            logger.error("Unable to count project sessions: \(error.localizedDescription, privacy: .public)")
+        }
         Task { await recomputeBranchPayloadProtection(in: context) }
         refresh()
     }
@@ -174,6 +182,7 @@ final class AppStore {
                 self.publishIngestionProgress(saving, generation: generation, force: true)
                 // Final pass applies source health (unavailable/failed) and any remaining sessions.
                 try self.upsert(report, into: context)
+                try self.refreshProjectSessionCounts(in: context)
                 guard self.refreshGeneration == generation else { return }
                 self.lastRefreshDate = .now
                 if self.requiresVisiblePageReindex {
@@ -352,6 +361,7 @@ final class AppStore {
 
         // Protect payloads only after a successful durable save.
         try context.save()
+        try refreshProjectSessionCounts(in: context)
         await recomputeBranchPayloadProtection(in: context)
         selectedSessionID = branch.id
         if persistenceWarning == nil {
@@ -590,6 +600,20 @@ final class AppStore {
                 statusMessage = "Imported sessions, but branch payload protection needs attention"
             }
         }
+    }
+
+    private func refreshProjectSessionCounts(in context: ModelContext) throws {
+        let projects = try context.fetch(FetchDescriptor<ProjectRecord>())
+        var counts: [String: Int] = [:]
+        counts.reserveCapacity(projects.count)
+        for project in projects {
+            let projectIdentity = project.identity
+            let descriptor = FetchDescriptor<SessionRecord>(
+                predicate: #Predicate { $0.project?.identity == projectIdentity }
+            )
+            counts[projectIdentity] = try context.fetchCount(descriptor)
+        }
+        projectSessionCounts = counts
     }
 
     private func isWithin(_ path: String, rootPath: String) -> Bool {
