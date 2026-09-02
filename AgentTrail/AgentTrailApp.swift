@@ -349,7 +349,9 @@ struct AgentTrailApp: App {
 
     @ViewBuilder
     private var liveSessionsMenuContent: some View {
-        if let libraryAccessIssue {
+        if AgentTrailRuntime.isTestHost {
+            EmptyView()
+        } else if let libraryAccessIssue {
             LiveSessionsUnavailableMenu(
                 explanation: libraryAccessIssue.menuExplanation,
                 onOpen: { appStore.bringMainWindowForward() }
@@ -368,7 +370,10 @@ struct AgentTrailApp: App {
 
     @ViewBuilder
     private var liveSessionsStatusLabel: some View {
-        if let modelContainer {
+        if AgentTrailRuntime.isTestHost {
+            Image(systemName: SessionLiveness.extraSymbolName(liveCount: 0))
+                .accessibilityLabel(SessionLiveness.extraAccessibilityLabel(liveCount: 0))
+        } else if let modelContainer {
             LiveSessionsStatusLabel(limit: appStore.loadedSessionLimit)
                 .environment(appStore)
                 .modelContainer(modelContainer)
