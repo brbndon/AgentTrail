@@ -26,6 +26,8 @@ final class AppStore {
     private(set) var isWatching = false
     private(set) var loadedSessionLimit = AppStore.sessionPageSize
     private(set) var totalAvailableSessionCount = 0
+    /// Live Codex count for the currently loaded page, derived from source mtimes.
+    private(set) var liveSessionCount = 0
     /// Total persisted threads per project, populated with database counts so
     /// sidebar headers never materialize the full session history.
     private(set) var projectSessionCounts: [String: Int] = [:]
@@ -41,6 +43,9 @@ final class AppStore {
     private var modelContext: ModelContext?
     private var eventWatcher: FSEventWatcher?
     private var refreshTask: Task<Void, Never>?
+    /// Keeps the menu-bar count fresh even when the main window is closed.
+    /// This is a render tick, not a second filesystem watcher.
+    private var liveCountTask: Task<Void, Never>?
     private var scheduledRefreshTask: Task<Void, Never>?
     /// User-requested or filesystem-requested rescan while a run is in flight.
     /// Only honored once after the current run finishes (never cancels mid-import).
@@ -76,6 +81,8 @@ final class AppStore {
         modelContext = context
         guard !hasBootstrapped else { return }
         hasBootstrapped = true
+        startLiveCountUpdates()
+        refreshLiveSessionCount()
         do {
             try refreshProjectSessionCounts(in: context)
         } catch {
@@ -184,6 +191,7 @@ final class AppStore {
                 // Final pass applies source health (unavailable/failed) and any remaining sessions.
                 try self.upsert(report, into: context)
                 try self.refreshProjectSessionCounts(in: context)
+                self.refreshLiveSessionCount()
                 guard self.refreshGeneration == generation else { return }
                 self.lastRefreshDate = .now
                 if self.requiresVisiblePageReindex {
@@ -216,6 +224,42 @@ final class AppStore {
         knownSessionLimitOverride = loadedSessionLimit
         loadedSessionLimit = min(loadedSessionLimit + Self.sessionPageSize, totalAvailableSessionCount)
         refresh()
+    }
+
+    func updateLiveSessionCount(from sessions: [SessionRecord], now: Date) {
+        let slice = SessionLiveness.slice(from: sessions, now: now)
+        let count = slice.sessions.count + slice.overflowCount
+        if liveSessionCount != count {
+            liveSessionCount = count
+        }
+    }
+
+    private func startLiveCountUpdates() {
+        guard liveCountTask == nil, !AgentTrailRuntime.isTestHost else { return }
+        liveCountTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                self.refreshLiveSessionCount()
+                do {
+                    try await Task.sleep(for: .milliseconds(Int(SessionLiveness.tickInterval * 1_000)))
+                } catch {
+                    return
+                }
+            }
+        }
+    }
+
+    private func refreshLiveSessionCount(now: Date = .now) {
+        guard let context = modelContext else { return }
+        var descriptor = FetchDescriptor<SessionRecord>(
+            sortBy: [SortDescriptor(\SessionRecord.sourceModifiedAt, order: .reverse)]
+        )
+        descriptor.fetchLimit = max(loadedSessionLimit, 1)
+        do {
+            updateLiveSessionCount(from: try context.fetch(descriptor), now: now)
+        } catch {
+            logger.error("Unable to refresh live session count: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     func openSessionFromMenuBar(_ id: UUID) {

@@ -339,7 +339,7 @@ struct AgentTrailApp: App {
 
     @SceneBuilder
     private var liveSessionsExtra: some Scene {
-        MenuBarExtra(isInserted: .constant(!AgentTrailRuntime.isTestHost)) {
+        MenuBarExtra {
             liveSessionsMenuContent
         } label: {
             liveSessionsStatusLabel
@@ -371,12 +371,9 @@ struct AgentTrailApp: App {
     @ViewBuilder
     private var liveSessionsStatusLabel: some View {
         if AgentTrailRuntime.isTestHost {
-            Image(systemName: SessionLiveness.extraSymbolName(liveCount: 0))
-                .accessibilityLabel(SessionLiveness.extraAccessibilityLabel(liveCount: 0))
-        } else if let modelContainer {
-            LiveSessionsStatusLabel(limit: appStore.loadedSessionLimit)
-                .environment(appStore)
-                .modelContainer(modelContainer)
+            EmptyView()
+        } else if modelContainer != nil {
+            LiveSessionsStatusLabel(liveCount: appStore.liveSessionCount)
         } else {
             Image(systemName: SessionLiveness.extraSymbolName(liveCount: 0))
                 .accessibilityLabel(SessionLiveness.extraAccessibilityLabel(liveCount: 0))

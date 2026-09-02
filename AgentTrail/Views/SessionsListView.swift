@@ -2,6 +2,7 @@ import SwiftData
 import SwiftUI
 
 struct SessionsListView: View {
+    private static let timelineStart = Date()
     @Environment(AppStore.self) private var appStore
     @Query private var sessions: [SessionRecord]
     @Binding var selection: UUID?
@@ -41,7 +42,7 @@ struct SessionsListView: View {
     var body: some View {
         @Bindable var appStore = appStore
 
-        SwiftUI.TimelineView(.periodic(from: .now, by: SessionLiveness.tickInterval)) { context in
+        SwiftUI.TimelineView(.periodic(from: Self.timelineStart, by: SessionLiveness.tickInterval)) { context in
             List(selection: $selection) {
                 ForEach(projectGroups) { group in
                     Section {
@@ -55,6 +56,8 @@ struct SessionsListView: View {
                 }
             }
             .listStyle(.sidebar)
+            .onAppear { updateLiveSessionCount(now: context.date) }
+            .onChange(of: context.date) { _, date in updateLiveSessionCount(now: date) }
         }
         .searchable(text: $appStore.sidebarSearch, placement: .sidebar, prompt: "Search sessions")
         .safeAreaInset(edge: .top) {
@@ -96,6 +99,10 @@ struct SessionsListView: View {
         } else {
             selection = filteredSessions.first?.id
         }
+    }
+
+    private func updateLiveSessionCount(now: Date) {
+        appStore.updateLiveSessionCount(from: sessions, now: now)
     }
 }
 

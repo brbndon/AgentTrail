@@ -162,6 +162,27 @@ final class SessionLivenessTests: XCTestCase {
         XCTAssertFalse(appStore.isLoading)
     }
 
+    @MainActor
+    func testAppStoreTracksLiveCountFromLoadedSessions() {
+        let appStore = AppStore()
+        let session = SessionRecord(
+            sourceKey: "codex:live-count",
+            agentType: .codex,
+            title: "Live",
+            startDate: now,
+            endDate: nil,
+            workingDirectory: "/tmp",
+            sourcePath: "/tmp/live.jsonl",
+            sourceModifiedAt: now
+        )
+
+        appStore.updateLiveSessionCount(from: [session], now: now)
+        XCTAssertEqual(appStore.liveSessionCount, 1)
+
+        appStore.updateLiveSessionCount(from: [session], now: now.addingTimeInterval(SessionLiveness.recency))
+        XCTAssertEqual(appStore.liveSessionCount, 0)
+    }
+
     private func isLive(age: TimeInterval) -> Bool {
         SessionLiveness.isRecentlyWriting(
             sourceModifiedAt: now.addingTimeInterval(-age),
