@@ -235,7 +235,6 @@ enum AgentTrailPersistence {
 @main
 struct AgentTrailApp: App {
     @State private var appStore: AppStore
-    @State private var isMenuBarExtraInserted = false
     private let modelContainer: ModelContainer?
     private let directories: AgentDirectories
     private let payloadStore: PayloadStore
@@ -301,7 +300,6 @@ struct AgentTrailApp: App {
             startupMessage: startup,
             persistenceWarning: stickyWarning
         ))
-        _isMenuBarExtraInserted = State(initialValue: !AgentTrailRuntime.isTestHost)
     }
 
     var body: some Scene {
@@ -341,7 +339,7 @@ struct AgentTrailApp: App {
 
     @SceneBuilder
     private var liveSessionsExtra: some Scene {
-        MenuBarExtra(isInserted: $isMenuBarExtraInserted) {
+        MenuBarExtra(isInserted: .constant(!AgentTrailRuntime.isTestHost)) {
             liveSessionsMenuContent
         } label: {
             liveSessionsStatusLabel
