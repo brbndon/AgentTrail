@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Observation
 import SwiftData
@@ -215,6 +216,21 @@ final class AppStore {
         knownSessionLimitOverride = loadedSessionLimit
         loadedSessionLimit = min(loadedSessionLimit + Self.sessionPageSize, totalAvailableSessionCount)
         refresh()
+    }
+
+    func openSessionFromMenuBar(_ id: UUID) {
+        selectedSessionID = id
+        bringMainWindowForward()
+    }
+
+    func bringMainWindowForward() {
+        guard !AgentTrailRuntime.isTestHost else { return }
+        NSApp.activate()
+        let window = NSApp.windows.first(where: \.isMiniaturized)
+            ?? NSApp.windows.first(where: { $0.canBecomeMain })
+            ?? NSApp.windows.first
+        window?.deminiaturize(nil)
+        window?.makeKeyAndOrderFront(nil)
     }
 
     /// Publishes discovery progress to the status bar, throttled so large trees

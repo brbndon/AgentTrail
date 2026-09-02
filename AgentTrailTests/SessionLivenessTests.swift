@@ -123,6 +123,16 @@ final class SessionLivenessTests: XCTestCase {
         XCTAssertEqual(SessionLiveness.extraAccessibilityLabel(liveCount: 3), "3 live Codex sessions")
     }
 
+    @MainActor
+    func testOpenSessionFromMenuBarSetsSelectionWithoutRefreshing() {
+        let appStore = AppStore()
+        let id = UUID()
+        XCTAssertNil(appStore.selectedSessionID)
+        appStore.openSessionFromMenuBar(id)
+        XCTAssertEqual(appStore.selectedSessionID, id)
+        XCTAssertFalse(appStore.isLoading)
+    }
+
     private func isLive(age: TimeInterval) -> Bool {
         SessionLiveness.isRecentlyWriting(
             sourceModifiedAt: now.addingTimeInterval(-age),
