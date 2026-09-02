@@ -15,6 +15,7 @@ AgentTrail is a local macOS viewer for understanding what coding agents did insi
 - Stores normalized metadata in SwiftData and raw event payloads in private local files.
 - Persists private, derived Codex checkpoints so growing active sessions resume at the last complete JSONL record.
 - Watches `~/.codex/sessions` for active-session updates.
+- Shows a menu bar extra for Codex sessions whose history files were written in the last three minutes.
 - Holds an exclusive lease on the shared Application Support library so installed, disk-image, and Xcode builds cannot import into it concurrently.
 
 Grok Build and Cursor parsers still exist in the source tree, but the shipping workflow does not scan them while their formats and UX are being stabilized.
