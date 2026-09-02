@@ -235,6 +235,7 @@ enum AgentTrailPersistence {
 @main
 struct AgentTrailApp: App {
     @State private var appStore: AppStore
+    @State private var isMenuBarExtraInserted = false
     private let modelContainer: ModelContainer?
     private let directories: AgentDirectories
     private let payloadStore: PayloadStore
@@ -300,6 +301,7 @@ struct AgentTrailApp: App {
             startupMessage: startup,
             persistenceWarning: stickyWarning
         ))
+        _isMenuBarExtraInserted = State(initialValue: !AgentTrailRuntime.isTestHost)
     }
 
     var body: some Scene {
@@ -332,6 +334,49 @@ struct AgentTrailApp: App {
                 SettingsView(directories: directories, payloadStore: payloadStore)
                     .frame(minWidth: 440, idealWidth: 520, minHeight: 300, idealHeight: 360)
             }
+        }
+
+        liveSessionsExtra
+    }
+
+    @SceneBuilder
+    private var liveSessionsExtra: some Scene {
+        MenuBarExtra(isInserted: $isMenuBarExtraInserted) {
+            liveSessionsMenuContent
+        } label: {
+            liveSessionsStatusLabel
+        }
+        .menuBarExtraStyle(.menu)
+    }
+
+    @ViewBuilder
+    private var liveSessionsMenuContent: some View {
+        if let libraryAccessIssue {
+            LiveSessionsUnavailableMenu(
+                explanation: libraryAccessIssue.menuExplanation,
+                onOpen: { appStore.bringMainWindowForward() }
+            )
+        } else if let modelContainer {
+            LiveSessionsMenu(limit: appStore.loadedSessionLimit)
+                .environment(appStore)
+                .modelContainer(modelContainer)
+        } else {
+            LiveSessionsUnavailableMenu(
+                explanation: appStore.statusMessage,
+                onOpen: { appStore.bringMainWindowForward() }
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var liveSessionsStatusLabel: some View {
+        if let modelContainer {
+            LiveSessionsStatusLabel(limit: appStore.loadedSessionLimit)
+                .environment(appStore)
+                .modelContainer(modelContainer)
+        } else {
+            Image(systemName: SessionLiveness.extraSymbolName(liveCount: 0))
+                .accessibilityLabel(SessionLiveness.extraAccessibilityLabel(liveCount: 0))
         }
     }
 }
