@@ -123,6 +123,35 @@ final class SessionLivenessTests: XCTestCase {
         XCTAssertEqual(SessionLiveness.extraAccessibilityLabel(liveCount: 3), "3 live Codex sessions")
     }
 
+    func testLibraryAccessIssueMenuExplanationMatchesWindowCopy() {
+        let owned = LibraryAccessIssue.ownedByAnotherProcess(nil)
+        XCTAssertEqual(
+            owned.menuExplanation,
+            "Another AgentTrail copy is using this library. Only one copy can import or edit it at a time."
+        )
+        let unavailable = LibraryAccessIssue.unavailable("The AgentTrail folder in Application Support is not usable.")
+        XCTAssertEqual(unavailable.menuExplanation, "The AgentTrail folder in Application Support is not usable.")
+    }
+
+    func testMenuItemTitleOmitsPathsAndUsesProjectAndCount() {
+        let project = ProjectRecord(identity: "path:/tmp/Demo", path: "/tmp/Demo", name: "Demo")
+        let session = SessionRecord(
+            sourceKey: "codex:title",
+            agentType: .codex,
+            title: "Repair ingestion",
+            startDate: now,
+            endDate: nil,
+            workingDirectory: "/tmp/Demo",
+            sourcePath: "/tmp/Demo/session.jsonl",
+            sourceModifiedAt: now,
+            project: project
+        )
+        let title = LiveSessionsMenu.itemTitle(for: session, now: now)
+        XCTAssertEqual(title, "Repair ingestion — Demo · 0 events")
+        XCTAssertFalse(title.contains("/tmp"))
+        XCTAssertFalse(title.contains("session.jsonl"))
+    }
+
     @MainActor
     func testOpenSessionFromMenuBarSetsSelectionWithoutRefreshing() {
         let appStore = AppStore()

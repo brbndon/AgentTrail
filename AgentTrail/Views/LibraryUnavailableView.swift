@@ -32,18 +32,7 @@ struct LibraryUnavailableView: View {
         }
     }
 
-    private var message: String {
-        switch issue {
-        case .ownedByAnotherProcess(let owner):
-            if let owner {
-                "Another AgentTrail \(owner.copyDescription) is using this library. Only one copy can import or edit it at a time."
-            } else {
-                "Another AgentTrail copy is using this library. Only one copy can import or edit it at a time."
-            }
-        case .unavailable(let message):
-            message
-        }
-    }
+    private var message: String { issue.menuExplanation }
 
     private var recoveryMessage: String {
         switch issue {
@@ -57,5 +46,20 @@ struct LibraryUnavailableView: View {
     private func showOwner(processIdentifier: Int32) {
         NSRunningApplication(processIdentifier: pid_t(processIdentifier))?
             .activate(options: [.activateAllWindows])
+    }
+}
+
+extension LibraryAccessIssue {
+    var menuExplanation: String {
+        switch self {
+        case .ownedByAnotherProcess(let owner):
+            if let owner {
+                "Another AgentTrail \(owner.copyDescription) is using this library. Only one copy can import or edit it at a time."
+            } else {
+                "Another AgentTrail copy is using this library. Only one copy can import or edit it at a time."
+            }
+        case .unavailable(let message):
+            message
+        }
     }
 }
