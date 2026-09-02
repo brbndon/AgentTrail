@@ -41,19 +41,21 @@ struct SessionsListView: View {
     var body: some View {
         @Bindable var appStore = appStore
 
-        List(selection: $selection) {
-            ForEach(projectGroups) { group in
-                Section {
-                    ForEach(group.sessions) { session in
-                        SessionRowView(session: session)
-                            .tag(session.id)
+        SwiftUI.TimelineView(.periodic(from: .now, by: SessionLiveness.tickInterval)) { context in
+            List(selection: $selection) {
+                ForEach(projectGroups) { group in
+                    Section {
+                        ForEach(group.sessions) { session in
+                            SessionRowView(session: session, now: context.date)
+                                .tag(session.id)
+                        }
+                    } header: {
+                        ProjectSectionHeader(name: group.name, sessionCount: group.totalCount)
                     }
-                } header: {
-                    ProjectSectionHeader(name: group.name, sessionCount: group.totalCount)
                 }
             }
+            .listStyle(.sidebar)
         }
-        .listStyle(.sidebar)
         .searchable(text: $appStore.sidebarSearch, placement: .sidebar, prompt: "Search sessions")
         .safeAreaInset(edge: .top) {
             Picker("Agent", selection: $appStore.agentFilter) {
@@ -212,6 +214,11 @@ private struct DiscoveryStatusBar: View {
 
 private struct SessionRowView: View {
     let session: SessionRecord
+    let now: Date
+
+    private var isLive: Bool {
+        SessionLiveness.isRecentlyWriting(session, now: now)
+    }
 
     var body: some View {
         HStack(spacing: 10) {
@@ -232,7 +239,7 @@ private struct SessionRowView: View {
                         Text("·")
                         Label("Degraded", systemImage: "exclamationmark.triangle")
                             .foregroundStyle(.orange)
-                    } else if session.status == .recording {
+                    } else if isLive {
                         Text("·")
                         Label("Live", systemImage: "record.circle")
                             .foregroundStyle(.red)
@@ -258,7 +265,7 @@ private struct SessionRowView: View {
                 session.title,
                 "\(session.stepCount) events",
                 session.sourceState == .degraded ? "Degraded" : nil,
-                session.status == .recording ? "Live" : nil,
+                session.sourceState != .degraded && isLive ? "Live" : nil,
                 session.isPinned ? "Pinned" : nil
             ]
             .compactMap { $0 }
