@@ -41,6 +41,11 @@ struct ParsedStep: Codable, Sendable {
     let toolCallID: String?
     let toolName: String?
     let fileChanges: [ParsedFileChange]
+    let identityBase: String
+    let eventType: String
+    let role: String?
+    let outerType: String
+    let isCompletedItem: Bool
 
     init(
         identity: String,
@@ -58,7 +63,12 @@ struct ParsedStep: Codable, Sendable {
         tokenCount: Int? = nil,
         toolCallID: String? = nil,
         toolName: String? = nil,
-        fileChanges: [ParsedFileChange] = []
+        fileChanges: [ParsedFileChange] = [],
+        identityBase: String? = nil,
+        eventType: String = "",
+        role: String? = nil,
+        outerType: String = "",
+        isCompletedItem: Bool = false
     ) {
         self.identity = TraceLimits.required(identity, to: TraceLimits.identity)
         self.index = TraceLimits.boundedNonNegative(index)
@@ -76,6 +86,37 @@ struct ParsedStep: Codable, Sendable {
         self.toolCallID = TraceLimits.bounded(toolCallID, to: TraceLimits.identity)
         self.toolName = TraceLimits.bounded(toolName, to: TraceLimits.eventType, trim: true)
         self.fileChanges = Array(fileChanges.prefix(TraceLimits.maxFileChanges))
+        self.identityBase = TraceLimits.required(identityBase ?? identity, to: TraceLimits.identity)
+        self.eventType = TraceLimits.required(eventType, to: TraceLimits.eventType)
+        self.role = TraceLimits.bounded(role, to: TraceLimits.role, trim: true)?.lowercased()
+        self.outerType = TraceLimits.required(outerType, to: TraceLimits.eventType)
+        self.isCompletedItem = isCompletedItem
+    }
+
+    func copy(index: Int? = nil, identity: String? = nil) -> ParsedStep {
+        ParsedStep(
+            identity: identity ?? self.identity,
+            index: index ?? self.index,
+            kind: kind,
+            timestamp: timestamp,
+            title: title,
+            summary: summary,
+            searchText: searchText,
+            payloadReference: payloadReference,
+            hasError: hasError,
+            commandText: commandText,
+            filePath: filePath,
+            exitCode: exitCode,
+            tokenCount: tokenCount,
+            toolCallID: toolCallID,
+            toolName: toolName,
+            fileChanges: fileChanges,
+            identityBase: identityBase,
+            eventType: eventType,
+            role: role,
+            outerType: outerType,
+            isCompletedItem: isCompletedItem
+        )
     }
 }
 

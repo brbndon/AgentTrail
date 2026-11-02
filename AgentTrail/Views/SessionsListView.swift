@@ -39,9 +39,17 @@ struct SessionsListView: View {
         )
     }
 
+    private var availableAgents: [AgentType] {
+        AgentType.allCases.filter { agent in
+            agent == .codex || agent == appStore.agentFilter || sessions.contains { $0.agentType == agent }
+        }
+    }
+
     var body: some View {
         @Bindable var appStore = appStore
 
+        // AppStore owns the menu-bar count timer and import updates. Keep this
+        // AppKit-backed List render-pure to avoid reentrant delegate updates.
         SwiftUI.TimelineView(.periodic(from: Self.timelineStart, by: SessionLiveness.tickInterval)) { context in
             List(selection: $selection) {
                 ForEach(projectGroups) { group in
@@ -56,18 +64,24 @@ struct SessionsListView: View {
                 }
             }
             .listStyle(.sidebar)
-            .onAppear { updateLiveSessionCount(now: context.date) }
-            .onChange(of: context.date) { _, date in updateLiveSessionCount(now: date) }
         }
-        .searchable(text: $appStore.sidebarSearch, placement: .sidebar, prompt: "Search sessions")
+        .searchable(text: $appStore.sidebarSearch, placement: .sidebar, prompt: "Search loaded sessions")
         .safeAreaInset(edge: .top) {
-            Picker("Agent", selection: $appStore.agentFilter) {
-                Text("All agents").tag(AgentType?.none)
-                ForEach(AgentType.allCases) { agentType in
-                    Text(agentType.displayName).tag(AgentType?.some(agentType))
+            Group {
+                if availableAgents.count > 1 {
+                    Picker("Agent", selection: $appStore.agentFilter) {
+                        Text("All imported agents").tag(AgentType?.none)
+                        ForEach(availableAgents) { agentType in
+                            Text(agentType.displayName).tag(AgentType?.some(agentType))
+                        }
+                    }
+                    .pickerStyle(.menu)
+                } else {
+                    Label("Codex sessions", systemImage: AgentType.codex.systemImage)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
                 }
             }
-            .pickerStyle(.menu)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 14)
             .padding(.vertical, 8)
@@ -81,6 +95,7 @@ struct SessionsListView: View {
                 visibleCount: sessions.count,
                 totalCount: appStore.totalAvailableSessionCount,
                 hasMoreSessions: appStore.hasMoreSessions,
+                nextPageCount: appStore.nextSessionPageCount,
                 loadMore: appStore.loadMoreSessions
             )
         }
@@ -99,10 +114,6 @@ struct SessionsListView: View {
         } else {
             selection = filteredSessions.first?.id
         }
-    }
-
-    private func updateLiveSessionCount(now: Date) {
-        appStore.updateLiveSessionCount(from: sessions, now: now)
     }
 }
 
@@ -172,6 +183,7 @@ private struct DiscoveryStatusBar: View {
     let visibleCount: Int
     let totalCount: Int
     let hasMoreSessions: Bool
+    let nextPageCount: Int
     let loadMore: () -> Void
 
     var body: some View {
@@ -199,13 +211,13 @@ private struct DiscoveryStatusBar: View {
             }
 
             if totalCount > 0 {
-                Text("Showing \(min(visibleCount, totalCount)) of \(totalCount) Codex threads")
+                Text("\(visibleCount) loaded · \(totalCount) discovered")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
             }
 
             if hasMoreSessions {
-                Button("Load 30 More", systemImage: "arrow.down.circle", action: loadMore)
+                Button("Load \(nextPageCount) Older Sessions", systemImage: "arrow.down.circle", action: loadMore)
                     .buttonStyle(.borderless)
                     .disabled(isLoading)
                     .frame(minHeight: 44)

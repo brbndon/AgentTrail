@@ -8,9 +8,8 @@ struct TimelineView: View {
     @State private var filter = TimelineFilter()
     @State private var selectedStepID: UUID?
     @State private var isInspectorVisible = true
-    @State private var isBranchSheetPresented = false
     @State private var isBranchGraphPresented = false
-    @State private var branchStepID: UUID?
+    @State private var branchStep: StepRecord?
     @FocusState private var isSearchFocused: Bool
 
     private var orderedSteps: [StepRecord] {
@@ -21,15 +20,13 @@ struct TimelineView: View {
         orderedSteps.filter(filter.matches)
     }
 
-    private var selectedStep: StepRecord? {
-        matchingSteps.first(where: { $0.id == selectedStepID }) ?? matchingSteps.first
-    }
-
-    private var branchStep: StepRecord? {
-        orderedSteps.first(where: { $0.id == branchStepID })
-    }
-
     var body: some View {
+        // Reuse one snapshot per render instead of re-sorting and re-filtering
+        // the entire history for each toolbar, list, and inspector read.
+        let orderedSteps = self.orderedSteps
+        let matchingSteps = orderedSteps.filter(filter.matches)
+        let selectedStep = matchingSteps.first(where: { $0.id == selectedStepID }) ?? matchingSteps.first
+
         VStack(spacing: 0) {
             TimelineToolbar(
                 session: session,
@@ -43,7 +40,14 @@ struct TimelineView: View {
             Divider()
 
             if matchingSteps.isEmpty {
-                TimelineEmptyState(filter: filter)
+                VStack(spacing: 12) {
+                    TimelineEmptyState(filter: filter)
+                    if filter.isActive {
+                        Button("Clear filters") { filter.reset() }
+                            .buttonStyle(.bordered)
+                            .padding(.bottom, 24)
+                    }
+                }
             } else {
                 HSplitView {
                     TimelineStepList(steps: matchingSteps, selection: $selectedStepID)
@@ -51,9 +55,9 @@ struct TimelineView: View {
 
                     if isInspectorVisible, let selectedStep {
                         StepDetailView(step: selectedStep, payloadStore: payloadStore) {
-                            branchStepID = selectedStep.id
-                            isBranchSheetPresented = true
+                            branchStep = selectedStep
                         }
+                            .id(selectedStep.id)
                             .frame(minWidth: 340, idealWidth: 410, maxWidth: 560)
                     }
                 }
@@ -73,10 +77,8 @@ struct TimelineView: View {
         .onReceive(NotificationCenter.default.publisher(for: .agentTrailFocusTimelineSearch)) { _ in
             isSearchFocused = true
         }
-        .sheet(isPresented: $isBranchSheetPresented) {
-            if let branchStep {
-                BranchSessionSheet(step: branchStep)
-            }
+        .sheet(item: $branchStep) { step in
+            BranchSessionSheet(step: step)
         }
     }
 

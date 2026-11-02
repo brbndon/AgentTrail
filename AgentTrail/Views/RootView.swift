@@ -29,7 +29,12 @@ struct RootView: View {
                     isLoading: appStore.isLoading,
                     statusMessage: appStore.statusMessage,
                     progress: appStore.ingestionProgress,
-                    hasSessions: !latestSession.isEmpty
+                    hasSessions: !latestSession.isEmpty,
+                    hasActiveFilters: !TraceSearch.terms(appStore.sidebarSearch).isEmpty || appStore.agentFilter != nil,
+                    clearFilters: {
+                        appStore.sidebarSearch = ""
+                        appStore.agentFilter = nil
+                    }
                 )
             }
         }
@@ -81,11 +86,15 @@ struct EmptyStateView: View {
     var statusMessage = ""
     var progress: IngestionProgress?
     var hasSessions = false
+    var hasActiveFilters = false
+    var clearFilters: () -> Void = { }
 
     var body: some View {
         ContentUnavailableView {
             if isLoading {
                 Label("Importing local sessions", systemImage: "arrow.triangle.2.circlepath")
+            } else if hasSessions && hasActiveFilters {
+                Label("No matching sessions", systemImage: "magnifyingglass")
             } else if hasSessions {
                 Label("Choose a session", systemImage: "point.3.connected.trianglepath.dotted")
             } else {
@@ -110,6 +119,8 @@ struct EmptyStateView: View {
                         .multilineTextAlignment(.center)
                         .frame(maxWidth: 360)
                 }
+            } else if hasSessions && hasActiveFilters {
+                Text("Search and filters apply to loaded sessions. Clear them to see your sessions, or load older sessions from the sidebar.")
             } else if hasSessions {
                 Text("Select a trace from the sidebar to inspect its imported events.")
             } else {
@@ -118,6 +129,11 @@ struct EmptyStateView: View {
                     : statusMessage)
                     .multilineTextAlignment(.center)
                     .textSelection(.enabled)
+            }
+        } actions: {
+            if hasSessions && hasActiveFilters && !isLoading {
+                Button("Clear search and filters", action: clearFilters)
+                    .buttonStyle(.bordered)
             }
         }
         .accessibilityElement(children: .combine)

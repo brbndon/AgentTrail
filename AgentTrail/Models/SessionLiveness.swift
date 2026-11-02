@@ -1,5 +1,16 @@
 import Foundation
 
+struct LiveSessionMenuItem: Identifiable, Equatable, Sendable {
+    let id: UUID
+    let title: String
+    let projectName: String
+    let eventCount: Int
+
+    var displayTitle: String {
+        "\(title) — \(projectName) · \(eventCount) events"
+    }
+}
+
 enum SessionLiveness {
     static let recency: TimeInterval = 180
     static let tickInterval: TimeInterval = 15

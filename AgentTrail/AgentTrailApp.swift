@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import SwiftData
 import SwiftUI
@@ -22,6 +23,15 @@ enum AgentTrailRuntime {
             return PayloadStore(rootURL: root)
         }
         return PayloadStore()
+    }
+}
+
+/// Keeps AgentTrail a normal windowed application even though it owns a
+/// companion menu-bar scene.
+@MainActor
+final class AgentTrailApplicationDelegate: NSObject, NSApplicationDelegate {
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        true
     }
 }
 
@@ -234,6 +244,8 @@ enum AgentTrailPersistence {
 
 @main
 struct AgentTrailApp: App {
+    @NSApplicationDelegateAdaptor(AgentTrailApplicationDelegate.self)
+    private var applicationDelegate
     @State private var appStore: AppStore
     private let modelContainer: ModelContainer?
     private let directories: AgentDirectories
@@ -339,7 +351,10 @@ struct AgentTrailApp: App {
 
     @SceneBuilder
     private var liveSessionsExtra: some Scene {
-        MenuBarExtra {
+        // macOS SceneBuilder permits only availability-based conditionals. Keep
+        // the scene inert in XCTest without putting reactive content in the
+        // MenuBarExtra label, which would regress normal launch on macOS 26.
+        MenuBarExtra(isInserted: .constant(!AgentTrailRuntime.isTestHost)) {
             liveSessionsMenuContent
         } label: {
             liveSessionsStatusLabel
@@ -357,7 +372,7 @@ struct AgentTrailApp: App {
                 onOpen: { appStore.bringMainWindowForward() }
             )
         } else if let modelContainer {
-            LiveSessionsMenu(limit: appStore.loadedSessionLimit)
+            LiveSessionsMenu()
                 .environment(appStore)
                 .modelContainer(modelContainer)
         } else {

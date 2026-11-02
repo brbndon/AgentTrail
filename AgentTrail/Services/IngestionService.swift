@@ -263,7 +263,6 @@ actor IngestionService {
 
         let overallTotal = work.count
         var results: [ParsedSession] = []
-        var pendingBatch: [ParsedSession] = []
         var sessionsImported = 0
         var sessionsSkipped = 0
         var totalFailures = 0
@@ -304,8 +303,8 @@ actor IngestionService {
                 continue
             }
 
+            let session: ParsedSession?
             do {
-                let session: ParsedSession?
                 switch item {
                 case .codex(let url):
                     session = try await codexParser.parseIncrementally(
@@ -320,17 +319,9 @@ actor IngestionService {
                 }
                 if let session {
                     results.append(session)
-                    pendingBatch.append(session)
                     sessionsImported += 1
                     if session.sourceState == .degraded {
                         degradedByAgent[item.agent, default: []].insert(path)
-                    }
-                    if pendingBatch.count >= 20 {
-                        let batch = pendingBatch
-                        pendingBatch = []
-                        if let onBatch {
-                            try await onBatch(batch)
-                        }
                     }
                 }
             } catch is CancellationError {
@@ -339,11 +330,13 @@ actor IngestionService {
                 failedByAgent[item.agent, default: []].insert(path)
                 totalFailures += 1
                 logger.debug("Skipping unavailable source for \(item.agent.rawValue, privacy: .public)")
+                continue
             }
-        }
-        if !pendingBatch.isEmpty, let onBatch {
-            try await onBatch(pendingBatch)
-            pendingBatch = []
+            // Publish the newest session before parsing the next source. Delivery
+            // errors belong to the consumer, not to the source-health report.
+            if let session, let onBatch {
+                try await onBatch([session])
+            }
         }
 
         var reports: [IngestionSourceReport] = []
@@ -389,10 +382,11 @@ actor IngestionService {
         return FileManager.default.isReadableFile(atPath: url.path)
     }
 
-    /// File mtimes and SwiftData dates can differ by sub-second rounding.
+    /// Allow only floating-point date conversion noise. A sub-second write is
+    /// still a real update and must not be skipped.
     private static func isUnchanged(sourceKey: String, modifiedAt: Date, known: [String: Date]) -> Bool {
         guard let knownDate = known[sourceKey] else { return false }
-        return abs(knownDate.timeIntervalSince(modifiedAt)) < 1.5
+        return abs(knownDate.timeIntervalSince(modifiedAt)) < 0.000_001
     }
 
     private static func emitProgress(

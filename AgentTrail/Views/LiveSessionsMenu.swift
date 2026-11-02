@@ -1,50 +1,44 @@
-import SwiftData
 import SwiftUI
 
 struct LiveSessionsMenu: View {
-    private static let timelineStart = Date()
     @Environment(AppStore.self) private var appStore
-    @Query private var sessions: [SessionRecord]
-
-    init(limit: Int) {
-        var descriptor = FetchDescriptor<SessionRecord>(
-            sortBy: [SortDescriptor(\SessionRecord.sourceModifiedAt, order: .reverse)]
-        )
-        descriptor.fetchLimit = max(limit, 1)
-        _sessions = Query(descriptor)
-    }
 
     var body: some View {
-        SwiftUI.TimelineView(.periodic(from: Self.timelineStart, by: SessionLiveness.tickInterval)) { context in
-            let slice = SessionLiveness.slice(from: sessions, now: context.date)
-            if slice.sessions.isEmpty {
-                Text("No live Codex sessions")
-            } else {
-                ForEach(slice.sessions, id: \.id) { session in
-                    Button {
-                        appStore.openSessionFromMenuBar(session.id)
-                    } label: {
-                        Text(Self.itemTitle(for: session, now: context.date))
-                    }
-                }
-                if slice.overflowCount > 0 {
-                    Text("\(slice.overflowCount) more live sessions")
+        // MenuBarExtra can re-enter its AppKit host while a Query/Timeline is
+        // updating. AppStore publishes this small snapshot on its 15-second
+        // tick so opening the menu stays render-only.
+        let items = appStore.liveSessionMenuItems
+        if items.isEmpty {
+            Text("No live Codex sessions")
+        } else {
+            ForEach(items) { item in
+                Button {
+                    appStore.openSessionFromMenuBar(item.id)
+                } label: {
+                    Text(item.displayTitle)
                 }
             }
-            Divider()
-            Button("Open AgentTrail") {
-                appStore.bringMainWindowForward()
-            }
-            Button("Refresh Sessions") {
-                appStore.refresh()
+            if appStore.liveSessionOverflowCount > 0 {
+                Text("\(appStore.liveSessionOverflowCount) more live sessions")
             }
         }
+        Divider()
+        Button("Open AgentTrail") {
+            appStore.bringMainWindowForward()
+        }
+        Button("Refresh Sessions") {
+            appStore.refresh()
+        }
+        .disabled(appStore.isLoading)
     }
 
     static func itemTitle(for session: SessionRecord, now: Date) -> String {
-        let project = session.project?.name ?? "Unknown project"
-        let events = "\(session.stepCount) events"
-        return "\(session.title) — \(project) · \(events)"
+        LiveSessionMenuItem(
+            id: session.id,
+            title: session.title,
+            projectName: session.project?.name ?? "Unknown project",
+            eventCount: session.stepCount
+        ).displayTitle
     }
 }
 

@@ -10,6 +10,7 @@ struct StepDetailView: View {
     @State private var isLoadingPayload = false
     @State private var payloadErrorMessage: String?
     @State private var payloadLoadID = UUID()
+    @State private var isPayloadExpanded = false
     let payloadStore: PayloadStore
 
     init(step: StepRecord, payloadStore: PayloadStore, onCreateBranch: @escaping () -> Void) {
@@ -30,8 +31,11 @@ struct StepDetailView: View {
             .frame(maxWidth: 900, alignment: .leading)
         }
         .background(Color(nsColor: .windowBackgroundColor))
-        .navigationTitle("Step detail")
-        .task(id: step.id) {
+        .task(id: isPayloadExpanded ? step.id : nil) {
+            guard isPayloadExpanded else {
+                payloadLoadID = UUID()
+                return
+            }
             await loadPayload()
         }
     }
@@ -94,37 +98,46 @@ struct StepDetailView: View {
     }
 
     private var rawPayload: some View {
-        DetailSection(title: "Raw payload") {
-            if isLoadingPayload {
-                ProgressView("Loading payload…")
-                    .controlSize(.small)
-            } else if let payloadText {
-                Text(payloadText)
-                    .font(.system(.caption, design: .monospaced))
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                if payloadWasTruncated {
-                    Text("Payload preview truncated at 4 MB.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            } else if let payloadErrorMessage {
-                VStack(alignment: .leading, spacing: 8) {
-                    Label(payloadErrorMessage, systemImage: "exclamationmark.triangle")
-                        .foregroundStyle(.red)
-                    Button("Retry") {
-                        Task {
-                            let loadID = UUID()
-                            payloadLoadID = loadID
-                            await loadPayload(loadID: loadID)
-                        }
-                    }
-                    .buttonStyle(.bordered)
-                }
-            } else {
-                Text("The original payload is unavailable for this step.")
+        DisclosureGroup(isExpanded: $isPayloadExpanded) {
+            rawPayloadContent
+                .padding(.top, 9)
+        } label: {
+            Text("Raw payload")
+                .font(.headline)
+        }
+    }
+
+    @ViewBuilder
+    private var rawPayloadContent: some View {
+        if isLoadingPayload {
+            ProgressView("Loading payload…")
+                .controlSize(.small)
+        } else if let payloadText {
+            Text(payloadText)
+                .font(.system(.caption, design: .monospaced))
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if payloadWasTruncated {
+                Text("Payload preview truncated at 4 MB.")
+                    .font(.caption)
                     .foregroundStyle(.secondary)
             }
+        } else if let payloadErrorMessage {
+            VStack(alignment: .leading, spacing: 8) {
+                Label(payloadErrorMessage, systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.red)
+                Button("Retry") {
+                    Task {
+                        let loadID = UUID()
+                        payloadLoadID = loadID
+                        await loadPayload(loadID: loadID)
+                    }
+                }
+                .buttonStyle(.bordered)
+            }
+        } else {
+            Text("The original payload is unavailable for this step.")
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -145,6 +158,8 @@ struct StepDetailView: View {
         }
 
         isLoadingPayload = true
+        payloadText = nil
+        payloadWasTruncated = false
         payloadErrorMessage = nil
         defer {
             if payloadLoadID == loadID { isLoadingPayload = false }

@@ -11,7 +11,7 @@ struct CodexIncrementalParseResult: Sendable {
 }
 
 private struct CodexIngestionCheckpoint: Codable, Sendable {
-    static let currentVersion = 2
+    static let currentVersion = 4
 
     let version: Int
     let sourceKey: String
@@ -152,16 +152,24 @@ extension CodexSessionParser {
         }
 
         guard completeOffset > startOffset else {
-            throw TraceParserError.sourceChanged(sourceURL)
+            return CodexIncrementalParseResult(
+                session: nil,
+                resumedFromOffset: nil,
+                bytesRead: 0,
+                checkpointWasReset: false,
+                hadTrailingPartialRecord: hasTrailingPartial || before.size > 0
+            )
         }
+        let priorSession = canResume ? checkpoint?.session : nil
         let parsed = try await parse(
             fileURL: sourceURL,
             payloadStore: payloadStore,
             byteRange: startOffset..<completeOffset,
             sourceIdentityURL: sourceURL,
             sourceModificationDate: before.modificationDate,
-            knownToolNamesByCallID: Self.toolNamesByCallID(in: checkpoint?.session),
-            hasPriorCanonicalUserMessage: Self.hasCanonicalUserMessage(in: checkpoint?.session)
+            knownToolNamesByCallID: Self.toolNamesByCallID(in: priorSession),
+            hasPriorCanonicalUserMessage: Self.hasCanonicalUserMessage(in: priorSession),
+            knownCanonicalEventTypes: Self.canonicalConversationEventTypes(in: priorSession)
         )
         let after = try CodexFileSnapshot.capture(sourceURL)
         guard after == before else { throw TraceParserError.sourceChanged(sourceURL) }
@@ -237,21 +245,27 @@ extension CodexSessionParser {
         modificationDate: Date
     ) -> ParsedSession {
         guard let appended else { return updatedSession(existing, modificationDate: modificationDate) }
-        var steps = existing.steps
-        var identities = Set(steps.map(\.identity))
-        for step in appended.steps where identities.insert(step.identity).inserted {
-            steps.append(step)
-        }
+        var steps = suppressConversationDuplicates(in: existing.steps + appended.steps)
+        let identities = StableTraceIdentity.assignIdentities(to: steps.map(\.identityBase))
+        steps = zip(steps, identities).map { step, identity in step.copy(identity: identity) }
         steps.sort {
             if $0.timestamp != $1.timestamp { return $0.timestamp < $1.timestamp }
             return $0.identity < $1.identity
         }
         steps = steps.enumerated().map { index, step in step.copy(index: index) }
         let projectPath = appended.workingDirectory.isEmpty ? existing.workingDirectory : appended.workingDirectory
+        let title = steps.first(where: {
+            CodexSessionParser.isCanonicalUserMessage(
+                eventType: $0.eventType,
+                searchText: $0.searchText
+            ) && !$0.summary.isEmpty
+        })?.summary
+            ?? steps.first(where: { $0.kind == .user && !$0.summary.isEmpty })?.summary
+            ?? existing.title
         return ParsedSession(
             sourceKey: existing.sourceKey,
             agentType: .codex,
-            title: existing.title,
+            title: title,
             startDate: min(existing.startDate, appended.startDate),
             endDate: steps.last?.timestamp,
             workingDirectory: projectPath,
@@ -296,9 +310,46 @@ extension CodexSessionParser {
 
     private static func hasCanonicalUserMessage(in session: ParsedSession?) -> Bool {
         session?.steps.contains {
-            $0.kind == .user
-                && ($0.searchText == "user_message" || $0.searchText.hasPrefix("user_message "))
+            CodexSessionParser.isCanonicalUserMessage(
+                eventType: $0.eventType,
+                searchText: $0.searchText
+            )
         } == true
+    }
+
+    private static func canonicalConversationEventTypes(in session: ParsedSession?) -> Set<String> {
+        guard let session else { return [] }
+        return Set(session.steps.filter { !$0.isCompletedItem }.map(\.eventType))
+    }
+
+    private static func suppressConversationDuplicates(in steps: [ParsedStep]) -> [ParsedStep] {
+        var steps = steps
+        let hasCanonical = steps.contains {
+            CodexSessionParser.isCanonicalUserMessage(
+                eventType: $0.eventType,
+                searchText: $0.searchText
+            )
+        }
+        if hasCanonical {
+            steps.removeAll {
+                CodexSessionParser.isMirroredConversationEnvelope(
+                    outerType: $0.outerType,
+                    eventType: $0.eventType,
+                    role: $0.role
+                )
+            }
+        } else {
+            steps.removeAll {
+                $0.eventType == "message" && CodexSessionParser.isInjectedContext($0.summary)
+            }
+        }
+        let canonicalTypes = Set(steps.filter { !$0.isCompletedItem }.map(\.eventType))
+        steps.removeAll {
+            $0.isCompletedItem
+                && CodexSessionParser.conversationItemTypes.contains($0.eventType)
+                && canonicalTypes.contains($0.eventType)
+        }
+        return steps
     }
 
     private static func lastCompleteRecordOffset(in url: URL, fileSize: UInt64) throws -> UInt64 {
@@ -341,28 +392,5 @@ extension CodexSessionParser {
         try handle.seek(toOffset: boundaryStart)
         let tail = try handle.read(upToCount: Int(boundary - boundaryStart)) ?? Data()
         return (StableTraceIdentity.payloadDigest(leading), StableTraceIdentity.payloadDigest(tail))
-    }
-}
-
-private extension ParsedStep {
-    func copy(index: Int) -> ParsedStep {
-        ParsedStep(
-            identity: identity,
-            index: index,
-            kind: kind,
-            timestamp: timestamp,
-            title: title,
-            summary: summary,
-            searchText: searchText,
-            payloadReference: payloadReference,
-            hasError: hasError,
-            commandText: commandText,
-            filePath: filePath,
-            exitCode: exitCode,
-            tokenCount: tokenCount,
-            toolCallID: toolCallID,
-            toolName: toolName,
-            fileChanges: fileChanges
-        )
     }
 }

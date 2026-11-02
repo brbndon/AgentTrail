@@ -30,7 +30,8 @@ struct CodexSessionParser {
         sourceIdentityURL: URL? = nil,
         sourceModificationDate: Date? = nil,
         knownToolNamesByCallID: [String: String] = [:],
-        hasPriorCanonicalUserMessage: Bool = false
+        hasPriorCanonicalUserMessage: Bool = false,
+        knownCanonicalEventTypes: Set<String> = []
     ) async throws -> ParsedSession? {
         guard Self.isRegularNonSymlink(fileURL) else { throw TraceParserError.unavailable(fileURL) }
         let identityURL = sourceIdentityURL ?? fileURL
@@ -57,6 +58,7 @@ struct CodexSessionParser {
             let toolCallID: String?
             let toolName: String?
             let fileChanges: [ParsedFileChange]
+            let isCompletedItem: Bool
             var identity: String = ""
             var payloadReference: String?
         }
@@ -99,10 +101,6 @@ struct CodexSessionParser {
                 metadataStartDate = JSONLineSupport.firstDate(in: payload as Any, keys: ["timestamp", "created_at", "createdAt"]) ?? eventDate
                 return
             }
-            if payloadType == "item_completed",
-               ["user_message", "agent_message", "reasoning", "plan", "context_compaction"].contains(eventType) {
-                return
-            }
             guard !Self.isContextOnly(eventType: eventType, role: role) else { return }
             guard events.count < TraceLimits.maxSteps else {
                 capped = true
@@ -116,6 +114,7 @@ struct CodexSessionParser {
             if let callID, let toolName { toolNamesByCallID[callID] = toolName }
             let resolvedToolName = toolName ?? callID.flatMap { toolNamesByCallID[$0] }
             let text = Self.summary(payload: diagnosticPayload, embeddedPayload: embeddedPayload, eventType: eventType)
+            let isCompletedItem = payloadType == "item_completed"
             if eventType == "user_message" {
                 hasCanonicalUserMessage = true
                 if canonicalTitle == nil, !text.isEmpty { canonicalTitle = text }
@@ -160,7 +159,8 @@ struct CodexSessionParser {
                 tokenCount: JSONLineSupport.tokenCount(in: diagnosticPayload),
                 toolCallID: callID,
                 toolName: resolvedToolName,
-                fileChanges: fileChanges
+                fileChanges: fileChanges,
+                isCompletedItem: isCompletedItem
             ))
         }
 
@@ -169,14 +169,18 @@ struct CodexSessionParser {
         }
         if hasCanonicalUserMessage {
             events.removeAll {
-                $0.outerType == "response_item"
-                    && $0.eventType == "message"
-                    && ($0.role == "user" || $0.role == "assistant")
+                Self.isMirroredConversationEnvelope(outerType: $0.outerType, eventType: $0.eventType, role: $0.role)
             }
         } else {
             events.removeAll {
                 $0.eventType == "message" && Self.isInjectedContext($0.text)
             }
+        }
+        let canonicalTypes = Set(events.filter { !$0.isCompletedItem }.map(\.eventType)).union(knownCanonicalEventTypes)
+        events.removeAll {
+            $0.isCompletedItem
+                && Self.conversationItemTypes.contains($0.eventType)
+                && canonicalTypes.contains($0.eventType)
         }
         guard firstStats.validRecords > 0, !events.isEmpty else { return nil }
 
@@ -185,6 +189,7 @@ struct CodexSessionParser {
         let expectedLines = Set(events.map(\.lineIndex))
         var seenLines = Set<Int>()
         let eventsByLine = Dictionary(uniqueKeysWithValues: events.map { ($0.lineIndex, $0) })
+        let eventIndicesByLine = Dictionary(uniqueKeysWithValues: events.indices.map { (events[$0].lineIndex, $0) })
 
         if let betweenPasses {
             try await betweenPasses()
@@ -204,7 +209,7 @@ struct CodexSessionParser {
                 rawPayload,
                 key: StableTraceIdentity.payloadKey(for: "\(sourceKey)#\(event.identity)")
             )
-            guard let index = events.firstIndex(where: { $0.lineIndex == lineIndex }) else { return }
+            guard let index = eventIndicesByLine[lineIndex] else { return }
             events[index].payloadReference = reference
         }
         guard secondStats.validRecords == firstStats.validRecords,
@@ -239,7 +244,12 @@ struct CodexSessionParser {
                 tokenCount: event.tokenCount,
                 toolCallID: event.toolCallID,
                 toolName: event.toolName,
-                fileChanges: event.fileChanges
+                fileChanges: event.fileChanges,
+                identityBase: event.baseIdentity,
+                eventType: event.eventType,
+                role: event.role,
+                outerType: event.outerType,
+                isCompletedItem: event.isCompletedItem
             )
         }
         let projectPath = TraceLimits.required(metadataWorkingDirectory.isEmpty ? contextualWorkingDirectory : metadataWorkingDirectory, to: TraceLimits.path)
@@ -313,12 +323,31 @@ struct CodexSessionParser {
         }
     }
 
+    static let conversationItemTypes: Set<String> = [
+        "user_message", "agent_message", "reasoning", "plan", "context_compaction"
+    ]
+
+    /// A user message is canonical whether it arrives as `event_msg.user_message`
+    /// or as a completed `UserMessage` item; both supersede the mirrored
+    /// `response_item.message` envelopes.
+    static func isCanonicalUserMessage(eventType: String, searchText: String) -> Bool {
+        eventType == "user_message"
+            || searchText == "user_message"
+            || searchText.hasPrefix("user_message ")
+    }
+
+    static func isMirroredConversationEnvelope(outerType: String, eventType: String, role: String?) -> Bool {
+        outerType == "response_item"
+            && eventType == "message"
+            && (role == "user" || role == "assistant")
+    }
+
     private static func isContextOnly(eventType: String, role: String?) -> Bool {
         if eventType == "message", role == "developer" || role == "system" { return true }
         return ["task_started", "task_complete", "turn_context", "world_state", "token_count"].contains(eventType)
     }
 
-    private static func isInjectedContext(_ text: String) -> Bool {
+    static func isInjectedContext(_ text: String) -> Bool {
         let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return [
             "# agents.md instructions",

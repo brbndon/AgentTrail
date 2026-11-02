@@ -6,13 +6,15 @@ AgentTrail is a local macOS viewer for understanding what coding agents did insi
 
 - Loads the 30 most recently updated Codex threads on launch.
 - Sorts threads newest-first by source modification time.
-- Loads older history in explicit 30-thread pages with **Load 30 More**.
+- Loads older history in explicit pages of up to 30 threads; the button shows how many older sessions remain in the next page.
+- Searches the loaded sessions, with a clear recovery action when search or filters match nothing.
 - Groups each globally newest-first page by project and shows total imported thread counts without loading full session histories.
 - Uses Codex `session_meta` and `turn_context` records to identify the workspace.
-- Uses canonical `user_message` and `agent_message` records for clean task titles and conversation steps.
+- Uses canonical `user_message` and `agent_message` records (event messages or completed items) for clean task titles and conversation steps, without repeating the mirrored response messages.
 - Links tool results back to their call IDs (including across incremental refreshes) so commands, tool names, failures, and exit codes are easier to diagnose.
 - Normalizes direct and nested Codex command, patch, file-change, and MCP completion records into concise semantic steps.
 - Stores normalized metadata in SwiftData and raw event payloads in private local files.
+- Loads raw payload previews only when their inspector disclosure is expanded.
 - Persists private, derived Codex checkpoints so growing active sessions resume at the last complete JSONL record.
 - Watches `~/.codex/sessions` for active-session updates.
 - Shows a menu bar extra for Codex sessions whose history files were written in the last three minutes.

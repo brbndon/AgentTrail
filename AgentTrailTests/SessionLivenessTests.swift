@@ -133,6 +133,7 @@ final class SessionLivenessTests: XCTestCase {
         XCTAssertEqual(unavailable.menuExplanation, "The AgentTrail folder in Application Support is not usable.")
     }
 
+    @MainActor
     func testMenuItemTitleOmitsPathsAndUsesProjectAndCount() {
         let project = ProjectRecord(identity: "path:/tmp/Demo", path: "/tmp/Demo", name: "Demo")
         let session = SessionRecord(
@@ -178,9 +179,14 @@ final class SessionLivenessTests: XCTestCase {
 
         appStore.updateLiveSessionCount(from: [session], now: now)
         XCTAssertEqual(appStore.liveSessionCount, 1)
+        XCTAssertEqual(
+            appStore.liveSessionMenuItems.map(\.displayTitle),
+            ["Live — Unknown project · 0 events"]
+        )
 
         appStore.updateLiveSessionCount(from: [session], now: now.addingTimeInterval(SessionLiveness.recency))
         XCTAssertEqual(appStore.liveSessionCount, 0)
+        XCTAssertTrue(appStore.liveSessionMenuItems.isEmpty)
     }
 
     private func isLive(age: TimeInterval) -> Bool {
