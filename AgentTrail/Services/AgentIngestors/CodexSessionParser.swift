@@ -30,7 +30,7 @@ struct CodexSessionParser {
         sourceIdentityURL: URL? = nil,
         sourceModificationDate: Date? = nil,
         knownToolNamesByCallID: [String: String] = [:],
-        hasPriorCanonicalUserMessage: Bool = false
+        retainsConversationCandidates: Bool = false
     ) async throws -> ParsedSession? {
         guard Self.isRegularNonSymlink(fileURL) else { throw TraceParserError.unavailable(fileURL) }
         let identityURL = sourceIdentityURL ?? fileURL
@@ -57,6 +57,8 @@ struct CodexSessionParser {
             let toolCallID: String?
             let toolName: String?
             let fileChanges: [ParsedFileChange]
+            let isCompletedItem: Bool
+            let conversationDigest: String?
             var identity: String = ""
             var payloadReference: String?
         }
@@ -65,7 +67,6 @@ struct CodexSessionParser {
         var contextualWorkingDirectory = ""
         var metadataStartDate: Date?
         var canonicalTitle: String?
-        var hasCanonicalUserMessage = hasPriorCanonicalUserMessage
         var toolNamesByCallID = knownToolNamesByCallID
         var events: [RawEvent] = []
         var capped = false
@@ -99,10 +100,6 @@ struct CodexSessionParser {
                 metadataStartDate = JSONLineSupport.firstDate(in: payload as Any, keys: ["timestamp", "created_at", "createdAt"]) ?? eventDate
                 return
             }
-            if payloadType == "item_completed",
-               ["user_message", "agent_message", "reasoning", "plan", "context_compaction"].contains(eventType) {
-                return
-            }
             guard !Self.isContextOnly(eventType: eventType, role: role) else { return }
             guard events.count < TraceLimits.maxSteps else {
                 capped = true
@@ -116,8 +113,8 @@ struct CodexSessionParser {
             if let callID, let toolName { toolNamesByCallID[callID] = toolName }
             let resolvedToolName = toolName ?? callID.flatMap { toolNamesByCallID[$0] }
             let text = Self.summary(payload: diagnosticPayload, embeddedPayload: embeddedPayload, eventType: eventType)
+            let isCompletedItem = payloadType == "item_completed"
             if eventType == "user_message" {
-                hasCanonicalUserMessage = true
                 if canonicalTitle == nil, !text.isEmpty { canonicalTitle = text }
             }
             let fileChanges = JSONLineSupport.fileChanges(in: diagnosticPayload, eventType: eventType)
@@ -160,23 +157,14 @@ struct CodexSessionParser {
                 tokenCount: JSONLineSupport.tokenCount(in: diagnosticPayload),
                 toolCallID: callID,
                 toolName: resolvedToolName,
-                fileChanges: fileChanges
+                fileChanges: fileChanges,
+                isCompletedItem: isCompletedItem,
+                conversationDigest: Self.conversationDigest(in: diagnosticPayload, eventType: eventType)
             ))
         }
 
         if firstStats.isMalformedOnly {
             throw TraceParserError.malformedOnly(fileURL)
-        }
-        if hasCanonicalUserMessage {
-            events.removeAll {
-                $0.outerType == "response_item"
-                    && $0.eventType == "message"
-                    && ($0.role == "user" || $0.role == "assistant")
-            }
-        } else {
-            events.removeAll {
-                $0.eventType == "message" && Self.isInjectedContext($0.text)
-            }
         }
         guard firstStats.validRecords > 0, !events.isEmpty else { return nil }
 
@@ -185,6 +173,7 @@ struct CodexSessionParser {
         let expectedLines = Set(events.map(\.lineIndex))
         var seenLines = Set<Int>()
         let eventsByLine = Dictionary(uniqueKeysWithValues: events.map { ($0.lineIndex, $0) })
+        let eventIndicesByLine = Dictionary(uniqueKeysWithValues: events.indices.map { (events[$0].lineIndex, $0) })
 
         if let betweenPasses {
             try await betweenPasses()
@@ -204,7 +193,7 @@ struct CodexSessionParser {
                 rawPayload,
                 key: StableTraceIdentity.payloadKey(for: "\(sourceKey)#\(event.identity)")
             )
-            guard let index = events.firstIndex(where: { $0.lineIndex == lineIndex }) else { return }
+            guard let index = eventIndicesByLine[lineIndex] else { return }
             events[index].payloadReference = reference
         }
         guard secondStats.validRecords == firstStats.validRecords,
@@ -239,12 +228,18 @@ struct CodexSessionParser {
                 tokenCount: event.tokenCount,
                 toolCallID: event.toolCallID,
                 toolName: event.toolName,
-                fileChanges: event.fileChanges
+                fileChanges: event.fileChanges,
+                identityBase: event.baseIdentity,
+                eventType: event.eventType,
+                role: event.role,
+                outerType: event.outerType,
+                isCompletedItem: event.isCompletedItem,
+                conversationDigest: event.conversationDigest
             )
         }
         let projectPath = TraceLimits.required(metadataWorkingDirectory.isEmpty ? contextualWorkingDirectory : metadataWorkingDirectory, to: TraceLimits.path)
         let sourceState: SessionSourceState = (firstStats.hasProblems || capped) ? .degraded : .scanned
-        return ParsedSession(
+        let session = ParsedSession(
             sourceKey: sourceKey,
             agentType: .codex,
             title: title,
@@ -259,6 +254,54 @@ struct CodexSessionParser {
             projectPath: projectPath,
             projectName: Self.projectName(for: projectPath),
             steps: steps
+        )
+        return retainsConversationCandidates ? session : Self.normalizedConversation(session)
+    }
+
+    private static func conversationDigest(in payload: [String: Any], eventType: String) -> String? {
+        guard ["message", "user_message", "agent_message"].contains(eventType),
+              let content = JSONLineSupport.firstValue(in: payload, keys: ["message", "content", "text"])
+        else { return nil }
+        // Match complete text, never the 180-character display summary.
+        let text = JSONLineSupport.compactText(from: content, limit: Int.max, maximumCharacters: PayloadStore.maximumPayloadBytes)
+        return StableTraceIdentity.payloadDigest(Data(text.utf8))
+    }
+
+    /// Checkpoints retain candidates so a later canonical record can replace a
+    /// mirror without losing unmatched messages or changing append-boundary behavior.
+    static func normalizedConversation(_ session: ParsedSession) -> ParsedSession {
+        struct Key: Hashable { let type: String; let text: String }
+        func representation(_ step: ParsedStep) -> (Key, Int)? {
+            let text = step.conversationDigest ?? (step.summary.count < 180 ? step.summary : step.identity)
+            if isMirroredConversationEnvelope(outerType: step.outerType, eventType: step.eventType, role: step.role) {
+                return (Key(type: step.role == "user" ? "user_message" : "agent_message", text: text), 2)
+            }
+            guard conversationItemTypes.contains(step.eventType) else { return nil }
+            return (Key(type: step.eventType, text: text), step.isCompletedItem ? 1 : 0)
+        }
+        var counts: [Key: [Int]] = [:]
+        for step in session.steps {
+            if let (key, rank) = representation(step) {
+                counts[key, default: [0, 0, 0]][rank] += 1
+            }
+        }
+        var seen: [Key: [Int]] = [:]
+        let steps = session.steps.filter { step in
+            if step.eventType == "message", isInjectedContext(step.summary) { return false }
+            guard let (key, rank) = representation(step) else { return true }
+            seen[key, default: [0, 0, 0]][rank] += 1
+            let replacements = counts[key, default: [0, 0, 0]].prefix(rank).max() ?? 0
+            return seen[key]![rank] > replacements
+        }.enumerated().map { $0.element.copy(index: $0.offset) }
+        let title = steps.first(where: { $0.eventType == "user_message" })?.summary
+            ?? steps.first(where: { $0.kind == .user })?.summary ?? session.title
+        return ParsedSession(
+            sourceKey: session.sourceKey, agentType: session.agentType, title: title,
+            startDate: session.startDate, endDate: steps.last?.timestamp,
+            workingDirectory: session.workingDirectory, sourcePath: session.sourcePath,
+            sourceModifiedAt: session.sourceModifiedAt, status: session.status,
+            sourceState: session.sourceState, projectIdentity: session.projectIdentity,
+            projectPath: session.projectPath, projectName: session.projectName, steps: steps
         )
     }
 
@@ -313,12 +356,30 @@ struct CodexSessionParser {
         }
     }
 
+    static let conversationItemTypes: Set<String> = [
+        "user_message", "agent_message", "reasoning", "plan", "context_compaction"
+    ]
+
+    /// Both canonical user representations can supply the session title.
+    /// Duplicate suppression separately requires matching message content.
+    static func isCanonicalUserMessage(eventType: String, searchText: String) -> Bool {
+        eventType == "user_message"
+            || searchText == "user_message"
+            || searchText.hasPrefix("user_message ")
+    }
+
+    static func isMirroredConversationEnvelope(outerType: String, eventType: String, role: String?) -> Bool {
+        outerType == "response_item"
+            && eventType == "message"
+            && (role == "user" || role == "assistant")
+    }
+
     private static func isContextOnly(eventType: String, role: String?) -> Bool {
         if eventType == "message", role == "developer" || role == "system" { return true }
         return ["task_started", "task_complete", "turn_context", "world_state", "token_count"].contains(eventType)
     }
 
-    private static func isInjectedContext(_ text: String) -> Bool {
+    static func isInjectedContext(_ text: String) -> Bool {
         let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return [
             "# agents.md instructions",

@@ -3,6 +3,8 @@ import SwiftUI
 /// Names and persists a child trace branch created from a selected step.
 struct BranchSessionSheet: View {
     let step: StepRecord
+    /// Captured at presentation so the sheet never reads a step an import deleted.
+    private let forkPoint: String
 
     @Environment(AppStore.self) private var appStore
     @Environment(\.dismiss) private var dismiss
@@ -12,6 +14,7 @@ struct BranchSessionSheet: View {
 
     init(step: StepRecord) {
         self.step = step
+        forkPoint = "Step \(step.stepIndex + 1): \(step.title)"
         _branchName = State(initialValue: "Branch at step \(step.stepIndex + 1)")
     }
 
@@ -27,7 +30,7 @@ struct BranchSessionSheet: View {
 
             Form {
                 TextField("Branch name", text: $branchName)
-                LabeledContent("Fork point", value: "Step \(step.stepIndex + 1): \(step.title)")
+                LabeledContent("Fork point", value: forkPoint)
             }
             .formStyle(.grouped)
 
@@ -57,6 +60,10 @@ struct BranchSessionSheet: View {
     private func createBranch() async {
         isCreating = true
         defer { isCreating = false }
+        guard !step.isDeleted, step.modelContext != nil else {
+            errorMessage = "This step is no longer in the library. Close this sheet and choose another step."
+            return
+        }
         do {
             _ = try await appStore.createBranch(from: step, named: branchName)
             dismiss()

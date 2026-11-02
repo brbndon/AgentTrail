@@ -21,6 +21,15 @@ final class ApplicationSupportLease {
     }
 
     static func acquire(in supportDirectory: URL) -> ApplicationSupportLeaseResult {
+        acquire(in: supportDirectory, runningCopies: liveRunningCopies())
+    }
+
+    /// Test seam for same-bundle peers. Production uses `acquire(in:)`, which
+    /// enumerates live `NSRunningApplication` copies.
+    static func acquire(
+        in supportDirectory: URL,
+        runningCopies: [ApplicationSupportPeerCopy]
+    ) -> ApplicationSupportLeaseResult {
         let fileManager = FileManager.default
         do {
             try fileManager.createDirectory(at: supportDirectory, withIntermediateDirectories: true)
@@ -47,12 +56,18 @@ final class ApplicationSupportLease {
             return .unavailable("AgentTrail could not protect its library ownership file.")
         }
 
-        // A previously shipped copy does not know about this lock file. Prefer an
-        // already-running same-bundle process when one predates this launch, then
-        // use the lease to arbitrate races between updated copies.
-        if let owner = olderRunningCopy() {
+        // Legacy copies do not participate in the lock protocol. Only explicitly
+        // capable peers may be ignored after this process acquires the file lock.
+        if let peer = runningCopies.first(where: {
+            $0.processIdentifier != ProcessInfo.processInfo.processIdentifier
+                && !$0.isTerminated && !$0.supportsLibraryLease
+        }) {
             Darwin.close(descriptor)
-            return .ownedByAnotherProcess(owner)
+            return .ownedByAnotherProcess(ApplicationSupportOwner(
+                processIdentifier: peer.processIdentifier,
+                copyDescription: copyDescription(for: peer.bundleURL ?? Bundle.main.bundleURL),
+                acquiredAt: peer.launchDate ?? .distantPast
+            ))
         }
 
         let lease = ApplicationSupportLease(fileDescriptor: descriptor)
@@ -110,20 +125,18 @@ final class ApplicationSupportLease {
         return try? decoder.decode(ApplicationSupportOwner.self, from: data)
     }
 
-    private static func olderRunningCopy() -> ApplicationSupportOwner? {
-        guard let bundleIdentifier = Bundle.main.bundleIdentifier else { return nil }
-        let current = NSRunningApplication.current
-        let currentLaunchDate = current.launchDate ?? .now
-        let older = NSRunningApplication.runningApplications(withBundleIdentifier: bundleIdentifier)
-            .filter { $0.processIdentifier != current.processIdentifier && !$0.isTerminated }
-            .filter { ($0.launchDate ?? .distantPast) <= currentLaunchDate }
-            .min { ($0.launchDate ?? .distantPast) < ($1.launchDate ?? .distantPast) }
-        guard let older else { return nil }
-        return ApplicationSupportOwner(
-            processIdentifier: older.processIdentifier,
-            copyDescription: copyDescription(for: older.bundleURL ?? URL(fileURLWithPath: "/Applications/AgentTrail.app")),
-            acquiredAt: older.launchDate ?? .now
-        )
+    private static func liveRunningCopies() -> [ApplicationSupportPeerCopy] {
+        guard let bundleIdentifier = Bundle.main.bundleIdentifier else { return [] }
+        return NSRunningApplication.runningApplications(withBundleIdentifier: bundleIdentifier).map {
+            ApplicationSupportPeerCopy(
+                processIdentifier: $0.processIdentifier,
+                launchDate: $0.launchDate,
+                bundleURL: $0.bundleURL,
+                isTerminated: $0.isTerminated,
+                supportsLibraryLease: $0.bundleURL.flatMap(Bundle.init(url:))?
+                    .object(forInfoDictionaryKey: "AgentTrailSupportsLibraryLease") as? Bool ?? false
+            )
+        }
     }
 
     private static func copyDescription(for bundleURL: URL) -> String {
@@ -136,6 +149,14 @@ final class ApplicationSupportLease {
         }
         return "installed copy"
     }
+}
+
+struct ApplicationSupportPeerCopy: Sendable, Equatable {
+    let processIdentifier: pid_t
+    let launchDate: Date?
+    let bundleURL: URL?
+    let isTerminated: Bool
+    var supportsLibraryLease = false
 }
 
 struct ApplicationSupportOwner: Codable, Sendable, Equatable {

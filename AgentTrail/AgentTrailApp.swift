@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import SwiftData
 import SwiftUI
@@ -22,6 +23,15 @@ enum AgentTrailRuntime {
             return PayloadStore(rootURL: root)
         }
         return PayloadStore()
+    }
+}
+
+/// Keeps AgentTrail a normal windowed application even though it owns a
+/// companion menu-bar scene.
+@MainActor
+final class AgentTrailApplicationDelegate: NSObject, NSApplicationDelegate {
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        false
     }
 }
 
@@ -234,6 +244,8 @@ enum AgentTrailPersistence {
 
 @main
 struct AgentTrailApp: App {
+    @NSApplicationDelegateAdaptor(AgentTrailApplicationDelegate.self)
+    private var applicationDelegate
     @State private var appStore: AppStore
     private let modelContainer: ModelContainer?
     private let directories: AgentDirectories
@@ -303,7 +315,7 @@ struct AgentTrailApp: App {
     }
 
     var body: some Scene {
-        WindowGroup {
+        WindowGroup(id: "main") {
             if let libraryAccessIssue {
                 LibraryUnavailableView(issue: libraryAccessIssue)
             } else if let modelContainer {
@@ -329,9 +341,57 @@ struct AgentTrailApp: App {
                 LibraryUnavailableView(issue: libraryAccessIssue)
                     .frame(minWidth: 440, idealWidth: 520, minHeight: 300, idealHeight: 360)
             } else {
-                SettingsView(directories: directories, payloadStore: payloadStore)
-                    .frame(minWidth: 440, idealWidth: 520, minHeight: 300, idealHeight: 360)
+                SettingsView(directories: directories, payloadStore: payloadStore, preferences: appStore.browsePreferences)
+                    .frame(minWidth: 440, idealWidth: 520, minHeight: 360, idealHeight: 440)
             }
+        }
+
+        liveSessionsExtra
+    }
+
+    @SceneBuilder
+    private var liveSessionsExtra: some Scene {
+        // macOS SceneBuilder permits only availability-based conditionals. Keep
+        // the scene inert in XCTest without putting reactive content in the
+        // MenuBarExtra label, which would regress normal launch on macOS 26.
+        MenuBarExtra(isInserted: .constant(!AgentTrailRuntime.isTestHost)) {
+            liveSessionsMenuContent
+        } label: {
+            liveSessionsStatusLabel
+        }
+        .menuBarExtraStyle(.menu)
+    }
+
+    @ViewBuilder
+    private var liveSessionsMenuContent: some View {
+        if AgentTrailRuntime.isTestHost {
+            EmptyView()
+        } else if let libraryAccessIssue {
+            LiveSessionsUnavailableMenu(
+                explanation: libraryAccessIssue.menuExplanation,
+                onOpen: { appStore.bringMainWindowForward() }
+            )
+        } else if let modelContainer {
+            LiveSessionsMenu()
+                .environment(appStore)
+                .modelContainer(modelContainer)
+        } else {
+            LiveSessionsUnavailableMenu(
+                explanation: appStore.statusMessage,
+                onOpen: { appStore.bringMainWindowForward() }
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var liveSessionsStatusLabel: some View {
+        if AgentTrailRuntime.isTestHost {
+            EmptyView()
+        } else if modelContainer != nil {
+            LiveSessionsStatusLabel(liveCount: appStore.liveSessionCount)
+        } else {
+            Image(systemName: SessionLiveness.extraSymbolName(liveCount: 0))
+                .accessibilityLabel(SessionLiveness.extraAccessibilityLabel(liveCount: 0))
         }
     }
 }

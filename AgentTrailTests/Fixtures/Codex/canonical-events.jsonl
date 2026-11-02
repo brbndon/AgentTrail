@@ -3,5 +3,5 @@
 {"timestamp":"2026-01-02T10:00:02Z","type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"Injected developer context"}]}}
 {"timestamp":"2026-01-02T10:00:03Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Build the sample feature"}]}}
 {"timestamp":"2026-01-02T10:00:04Z","type":"event_msg","payload":{"type":"user_message","message":"Build the sample feature","images":[]}}
-{"timestamp":"2026-01-02T10:00:05Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Duplicate low-level response"}]}}
+{"timestamp":"2026-01-02T10:00:05Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Implemented the sample feature"}]}}
 {"timestamp":"2026-01-02T10:00:06Z","type":"event_msg","payload":{"type":"agent_message","message":"Implemented the sample feature","phase":"final_answer"}}

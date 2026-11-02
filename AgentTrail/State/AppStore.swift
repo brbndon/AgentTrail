@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Observation
 import SwiftData
@@ -8,7 +9,7 @@ import os
 @Observable
 final class AppStore {
     static let sessionPageSize = 30
-    private static let codexNormalizationVersion = 3
+    private static let codexNormalizationVersion = 5
     private static let codexNormalizationVersionKey = "CodexNormalizationVersion"
 
     var isLoading = false
@@ -25,6 +26,12 @@ final class AppStore {
     private(set) var isWatching = false
     private(set) var loadedSessionLimit = AppStore.sessionPageSize
     private(set) var totalAvailableSessionCount = 0
+    /// Live Codex count for the currently loaded page, derived from source mtimes.
+    private(set) var liveSessionCount = 0
+    /// Render-ready menu rows for the currently loaded page. This is transient
+    /// UI state; it deliberately keeps SwiftData queries out of MenuBarExtra.
+    private(set) var liveSessionMenuItems: [LiveSessionMenuItem] = []
+    private(set) var liveSessionOverflowCount = 0
     /// Total persisted threads per project, populated with database counts so
     /// sidebar headers never materialize the full session history.
     private(set) var projectSessionCounts: [String: Int] = [:]
@@ -33,13 +40,22 @@ final class AppStore {
         loadedSessionLimit < totalAvailableSessionCount
     }
 
+    var nextSessionPageCount: Int {
+        min(Self.sessionPageSize, max(totalAvailableSessionCount - loadedSessionLimit, 0))
+    }
+
     let agentDirectories: AgentDirectories
     let payloadStore: PayloadStore
+    /// Sort, grouping, and layout choices shared by every browsing surface.
+    let browsePreferences: BrowsePreferences
 
     private var hasBootstrapped = false
     private var modelContext: ModelContext?
     private var eventWatcher: FSEventWatcher?
     private var refreshTask: Task<Void, Never>?
+    /// Keeps the menu-bar count fresh even when the main window is closed.
+    /// This is a render tick, not a second filesystem watcher.
+    private var liveCountTask: Task<Void, Never>?
     private var scheduledRefreshTask: Task<Void, Never>?
     /// User-requested or filesystem-requested rescan while a run is in flight.
     /// Only honored once after the current run finishes (never cancels mid-import).
@@ -59,8 +75,10 @@ final class AppStore {
         agentDirectories: AgentDirectories = AgentDirectories(),
         payloadStore: PayloadStore = PayloadStore(),
         startupMessage: String? = nil,
-        persistenceWarning: String? = nil
+        persistenceWarning: String? = nil,
+        browsePreferences: BrowsePreferences? = nil
     ) {
+        self.browsePreferences = browsePreferences ?? BrowsePreferences()
         self.modelContext = modelContext
         self.agentDirectories = agentDirectories
         self.payloadStore = payloadStore
@@ -75,6 +93,8 @@ final class AppStore {
         modelContext = context
         guard !hasBootstrapped else { return }
         hasBootstrapped = true
+        startLiveCountUpdates()
+        refreshLiveSessionCount()
         do {
             try refreshProjectSessionCounts(in: context)
         } catch {
@@ -99,6 +119,8 @@ final class AppStore {
             }
             return
         }
+        scheduledRefreshTask?.cancel()
+        scheduledRefreshTask = nil
         isLoading = true
         ingestionProgress = IngestionProgress(
             phase: .scanning,
@@ -180,9 +202,11 @@ final class AppStore {
                     currentName: nil
                 )
                 self.publishIngestionProgress(saving, generation: generation, force: true)
-                // Final pass applies source health (unavailable/failed) and any remaining sessions.
-                try self.upsert(report, into: context)
+                // Every snapshot was saved from the stream. Only reconcile source
+                // health here; rewriting the full page doubles main-actor work.
+                try self.upsert(report, into: context, applySourceHealth: true, applySessions: false)
                 try self.refreshProjectSessionCounts(in: context)
+                self.refreshLiveSessionCount()
                 guard self.refreshGeneration == generation else { return }
                 self.lastRefreshDate = .now
                 if self.requiresVisiblePageReindex {
@@ -215,6 +239,66 @@ final class AppStore {
         knownSessionLimitOverride = loadedSessionLimit
         loadedSessionLimit = min(loadedSessionLimit + Self.sessionPageSize, totalAvailableSessionCount)
         refresh()
+    }
+
+    func updateLiveSessionCount(from sessions: [SessionRecord], now: Date) {
+        let slice = SessionLiveness.slice(from: sessions, now: now)
+        liveSessionMenuItems = slice.sessions.map { session in
+            LiveSessionMenuItem(
+                id: session.id,
+                title: session.title,
+                projectName: session.project?.name ?? "Unknown project",
+                eventCount: session.stepCount
+            )
+        }
+        liveSessionOverflowCount = slice.overflowCount
+        let count = slice.sessions.count + slice.overflowCount
+        if liveSessionCount != count {
+            liveSessionCount = count
+        }
+    }
+
+    private func startLiveCountUpdates() {
+        guard liveCountTask == nil, !AgentTrailRuntime.isTestHost else { return }
+        liveCountTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                guard self != nil else { return }
+                self?.refreshLiveSessionCount()
+                do {
+                    try await Task.sleep(for: .milliseconds(Int(SessionLiveness.tickInterval * 1_000)))
+                } catch {
+                    return
+                }
+            }
+        }
+    }
+
+    private func refreshLiveSessionCount(now: Date = .now) {
+        guard let context = modelContext else { return }
+        var descriptor = FetchDescriptor<SessionRecord>(
+            sortBy: [SortDescriptor(\SessionRecord.sourceModifiedAt, order: .reverse)]
+        )
+        descriptor.fetchLimit = max(loadedSessionLimit, 1)
+        do {
+            updateLiveSessionCount(from: try context.fetch(descriptor), now: now)
+        } catch {
+            logger.error("Unable to refresh live session count: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    func openSessionFromMenuBar(_ id: UUID) {
+        selectedSessionID = id
+        bringMainWindowForward()
+    }
+
+    func bringMainWindowForward() {
+        guard !AgentTrailRuntime.isTestHost else { return }
+        NSApp.activate()
+        let window = NSApp.windows.first(where: \.isMiniaturized)
+            ?? NSApp.windows.first(where: { $0.canBecomeMain })
+            ?? NSApp.windows.first
+        window?.deminiaturize(nil)
+        window?.makeKeyAndOrderFront(nil)
     }
 
     /// Publishes discovery progress to the status bar, throttled so large trees
@@ -257,8 +341,7 @@ final class AppStore {
             return "No sessions could be imported from \(discovered) discovered source\(discovered == 1 ? "" : "s")"
         }
 
-        let visible = min(report.requestedSessionLimit, report.totalDiscoveredSessionCount)
-        var parts = ["Showing latest \(visible) of \(report.totalDiscoveredSessionCount) Codex threads"]
+        var parts: [String] = []
         if report.sessions.count > 0 {
             let suffix = report.sessions.count == 1 ? "" : "s"
             parts.append("Imported \(report.sessions.count) session\(suffix)")
@@ -283,7 +366,8 @@ final class AppStore {
         descriptor.fetchLimit = max(limit, 1)
         let sessions = try context.fetch(descriptor)
         var known: [String: Date] = [:]
-        for session in sessions where !session.isBranch {
+        for session in sessions where !session.isBranch
+            && session.sourceState != .failed && session.sourceState != .unavailable {
             known[session.sourceKey] = session.sourceModifiedAt
         }
         return known
@@ -378,7 +462,12 @@ final class AppStore {
         scheduledRefreshTask = nil
         refreshTask?.cancel()
         refreshTask = nil
+        liveCountTask?.cancel()
+        liveCountTask = nil
         refreshRequestedWhileLoading = false
+        liveSessionMenuItems = []
+        liveSessionOverflowCount = 0
+        liveSessionCount = 0
         filesystemWatchEnabled = false
         eventWatcher?.stop()
         eventWatcher = nil
@@ -408,9 +497,11 @@ final class AppStore {
         isWatching = watcher.start()
     }
 
-    private func scheduleRefresh(delayMilliseconds: UInt64 = 2_500) {
+    func scheduleRefresh(delayMilliseconds: UInt64 = 2_500) {
+        // Keep the first deadline so continuous writes cannot postpone refresh
+        // indefinitely. Events during import already queue one follow-up.
+        guard scheduledRefreshTask == nil else { return }
         let token = watchToken
-        scheduledRefreshTask?.cancel()
         scheduledRefreshTask = Task<Void, Never> { @MainActor [weak self] in
             do {
                 try await Task.sleep(for: .milliseconds(delayMilliseconds))
@@ -430,12 +521,13 @@ final class AppStore {
         try upsert(IngestionReport(sessions: sessions, sources: [], skippedUnchangedCount: 0), into: context, applySourceHealth: false)
     }
 
-    private func upsert(_ report: IngestionReport, into context: ModelContext) throws {
-        try upsert(report, into: context, applySourceHealth: true)
-    }
-
-    private func upsert(_ report: IngestionReport, into context: ModelContext, applySourceHealth: Bool) throws {
-        for snapshot in report.sessions where !snapshot.sourceKey.hasPrefix("branch:") {
+    private func upsert(
+        _ report: IngestionReport,
+        into context: ModelContext,
+        applySourceHealth: Bool,
+        applySessions: Bool = true
+    ) throws {
+        for snapshot in (applySessions ? report.sessions : []) where !snapshot.sourceKey.hasPrefix("branch:") {
             let projectIdentity = snapshot.projectIdentity
             let projectDescriptor = FetchDescriptor<ProjectRecord>(predicate: #Predicate { $0.identity == projectIdentity })
             let project: ProjectRecord
