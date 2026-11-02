@@ -31,7 +31,7 @@ enum AgentTrailRuntime {
 @MainActor
 final class AgentTrailApplicationDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        true
+        false
     }
 }
 
@@ -315,7 +315,7 @@ struct AgentTrailApp: App {
     }
 
     var body: some Scene {
-        WindowGroup {
+        WindowGroup(id: "main") {
             if let libraryAccessIssue {
                 LibraryUnavailableView(issue: libraryAccessIssue)
             } else if let modelContainer {

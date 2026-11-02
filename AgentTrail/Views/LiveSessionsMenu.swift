@@ -2,6 +2,7 @@ import SwiftUI
 
 struct LiveSessionsMenu: View {
     @Environment(AppStore.self) private var appStore
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         // MenuBarExtra can re-enter its AppKit host while a Query/Timeline is
@@ -13,6 +14,7 @@ struct LiveSessionsMenu: View {
         } else {
             ForEach(items) { item in
                 Button {
+                    openWindow(id: "main")
                     appStore.openSessionFromMenuBar(item.id)
                 } label: {
                     Text(item.displayTitle)
@@ -24,6 +26,7 @@ struct LiveSessionsMenu: View {
         }
         Divider()
         Button("Open AgentTrail") {
+            openWindow(id: "main")
             appStore.bringMainWindowForward()
         }
         Button("Refresh Sessions") {

@@ -5,14 +5,14 @@ AgentTrail is a local macOS viewer for understanding what coding agents did insi
 ## Current experience
 
 - Loads the 30 most recently updated Codex threads on launch.
-- Sorts threads newest-first by source modification time.
+- Loads threads newest-first by source modification time; the selected sort controls their display order.
 - Loads older history in explicit pages of up to 30 threads; the button shows how many older sessions remain in the next page.
 - Searches the loaded sessions, with a clear recovery action when search or filters match nothing.
 - Shows the active sort (last updated, date started, title, or event count, in either direction) and lets you list sessions flat or grouped by project. Sorting applies to the loaded sessions.
 - Offers two layouts in Settings: **Classic** (session list and timeline) and **Dashboard** (a full-window grid of session cards with a Live now strip). Classic shows the same dashboard grid whenever no session is selected, and the app opens on it.
 - Groups each globally newest-first page by project and shows total imported thread counts without loading full session histories.
 - Uses Codex `session_meta` and `turn_context` records to identify the workspace.
-- Uses canonical `user_message` and `agent_message` records (event messages or completed items) for clean task titles and conversation steps, without repeating the mirrored response messages.
+- Uses canonical `user_message` and `agent_message` records (event messages or completed items) for clean task titles and conversation steps, without repeating matching mirrored response messages. Unmatched messages are retained.
 - Links tool results back to their call IDs (including across incremental refreshes) so commands, tool names, failures, and exit codes are easier to diagnose.
 - Normalizes direct and nested Codex command, patch, file-change, and MCP completion records into concise semantic steps.
 - Stores normalized metadata in SwiftData and raw event payloads in private local files.
@@ -45,6 +45,8 @@ AgentTrail does not use a network service. It reads local session files and writ
 ```
 
 Raw payload previews can include prompts, command output, and file paths from the original session. Treat exported screenshots or copied payloads as potentially sensitive.
+
+Conversation checkpoints retain candidate records so deduplication is consistent across incremental appends. Parser changes invalidate this derived cache and reimport loaded pages from the original JSONL; source logs and local branches are preserved.
 
 The `Checkpoints` subfolder contains normalized copies of imported session data and is protected with owner-only permissions. It is derived cache state, not a second source of truth; incompatible or invalid checkpoints are ignored and rebuilt from the read-only Codex session file.
 

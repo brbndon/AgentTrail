@@ -56,10 +56,19 @@ final class ApplicationSupportLease {
             return .unavailable("AgentTrail could not protect its library ownership file.")
         }
 
-        // Keep exclusive ownership once O_EXLOCK succeeds. Same-bundle copies that
-        // already dropped the lock (including equal launchDate peers still listed
-        // by NSRunningApplication) must not poison later launches.
-        _ = runningCopies
+        // Legacy copies do not participate in the lock protocol. Only explicitly
+        // capable peers may be ignored after this process acquires the file lock.
+        if let peer = runningCopies.first(where: {
+            $0.processIdentifier != ProcessInfo.processInfo.processIdentifier
+                && !$0.isTerminated && !$0.supportsLibraryLease
+        }) {
+            Darwin.close(descriptor)
+            return .ownedByAnotherProcess(ApplicationSupportOwner(
+                processIdentifier: peer.processIdentifier,
+                copyDescription: copyDescription(for: peer.bundleURL ?? Bundle.main.bundleURL),
+                acquiredAt: peer.launchDate ?? .distantPast
+            ))
+        }
 
         let lease = ApplicationSupportLease(fileDescriptor: descriptor)
         do {
@@ -123,7 +132,9 @@ final class ApplicationSupportLease {
                 processIdentifier: $0.processIdentifier,
                 launchDate: $0.launchDate,
                 bundleURL: $0.bundleURL,
-                isTerminated: $0.isTerminated
+                isTerminated: $0.isTerminated,
+                supportsLibraryLease: $0.bundleURL.flatMap(Bundle.init(url:))?
+                    .object(forInfoDictionaryKey: "AgentTrailSupportsLibraryLease") as? Bool ?? false
             )
         }
     }
@@ -145,6 +156,7 @@ struct ApplicationSupportPeerCopy: Sendable, Equatable {
     let launchDate: Date?
     let bundleURL: URL?
     let isTerminated: Bool
+    var supportsLibraryLease = false
 }
 
 struct ApplicationSupportOwner: Codable, Sendable, Equatable {

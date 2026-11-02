@@ -164,10 +164,12 @@ final class BrowseArrangementTests: XCTestCase {
     func testUnknownStoredValuesFallBackToDefaults() {
         let defaults = isolatedDefaults()
         defaults.set("bogus", forKey: "BrowseSortField")
+        defaults.set("bogus", forKey: "BrowseSortDirection")
         defaults.set("bogus", forKey: "BrowseGrouping")
         defaults.set("bogus", forKey: "AppLayoutStyle")
         let preferences = BrowsePreferences(defaults: defaults)
         XCTAssertEqual(preferences.sortField, .lastUpdated)
+        XCTAssertEqual(preferences.sortDirection, .descending)
         XCTAssertEqual(preferences.grouping, .project)
         XCTAssertEqual(preferences.layout, .classic)
     }

@@ -207,26 +207,25 @@ final class ParserTests: XCTestCase {
         let parser = CodexSessionParser()
         _ = try await parser.parseIncrementally(fileURL: file, payloadStore: payloadStore, checkpointStore: checkpointStore)
 
-        let growth = #"{"timestamp":"2026-01-07T10:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":"Mirrored low-level request"}}"# + "\n"
+        let growth = #"{"timestamp":"2026-01-07T10:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":"Repeat this request"}}"# + "\n"
             + #"{"timestamp":"2026-01-07T10:00:02Z","type":"event_msg","payload":{"type":"user_message","message":"Repeat this request"}}"# + "\n"
         try Self.append(Data(growth.utf8), to: file)
 
         let grown = try await parser.parseIncrementally(fileURL: file, payloadStore: payloadStore, checkpointStore: checkpointStore)
         XCTAssertEqual(grown.session?.steps.filter { $0.kind == .user }.map(\.summary), ["Repeat this request", "Repeat this request"])
-        XCTAssertFalse(grown.session?.steps.contains { $0.summary == "Mirrored low-level request" } == true)
     }
 
     func testCodexIncrementalCheckpointRemovesEarlierMirrorOnceCanonicalUserMessageArrives() async throws {
         let root = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let file = root.appendingPathComponent("mirror-first.jsonl")
-        let initial = #"{"timestamp":"2026-01-07T10:00:00Z","type":"response_item","payload":{"type":"message","role":"user","content":"Mirrored low-level request"}}"# + "\n"
+        let initial = #"{"timestamp":"2026-01-07T10:00:00Z","type":"response_item","payload":{"type":"message","role":"user","content":"Repeat this request"}}"# + "\n"
         try initial.write(to: file, atomically: true, encoding: .utf8)
         let payloadStore = PayloadStore(rootURL: root.appendingPathComponent("Blobs"))
         let checkpointStore = CodexCheckpointStore(rootURL: root.appendingPathComponent("Checkpoints"))
         let parser = CodexSessionParser()
         let first = try await parser.parseIncrementally(fileURL: file, payloadStore: payloadStore, checkpointStore: checkpointStore)
-        XCTAssertEqual(first.session?.steps.map(\.summary), ["Mirrored low-level request"])
+        XCTAssertEqual(first.session?.steps.map(\.summary), ["Repeat this request"])
 
         let growth = #"{"timestamp":"2026-01-07T10:00:01Z","type":"event_msg","payload":{"type":"user_message","message":"Repeat this request"}}"# + "\n"
             + #"{"timestamp":"2026-01-07T10:00:02Z","type":"event_msg","payload":{"type":"user_message","message":"Repeat this request"}}"# + "\n"
@@ -234,7 +233,6 @@ final class ParserTests: XCTestCase {
 
         let grown = try await parser.parseIncrementally(fileURL: file, payloadStore: payloadStore, checkpointStore: checkpointStore)
         XCTAssertEqual(grown.session?.steps.filter { $0.kind == .user }.map(\.summary), ["Repeat this request", "Repeat this request"])
-        XCTAssertFalse(grown.session?.steps.contains { $0.summary == "Mirrored low-level request" } == true)
     }
 
     func testCodexIncrementalDuplicateLinesMatchFullParseIdentities() async throws {
@@ -419,13 +417,15 @@ final class ParserTests: XCTestCase {
             processIdentifier: .max - 1,
             launchDate: sharedLaunchDate,
             bundleURL: Bundle.main.bundleURL,
-            isTerminated: false
+            isTerminated: false,
+            supportsLibraryLease: true
         )
         let equalDatePeer = ApplicationSupportPeerCopy(
             processIdentifier: .max - 2,
             launchDate: sharedLaunchDate,
             bundleURL: Bundle.main.bundleURL,
-            isTerminated: false
+            isTerminated: false,
+            supportsLibraryLease: true
         )
 
         // A copy that already dropped the lock must not poison relaunch after
@@ -1572,5 +1572,102 @@ private actor IngestionDeliveryCollector {
 
     func recordBatch(_ sessions: [ParsedSession]) {
         deliveries.append(contentsOf: sessions.map(\.title))
+    }
+}
+
+
+extension ParserTests {
+    func testMixedConversationRetainsUnmatchedMessagesAcrossEveryAppendBoundary() async throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let lines = [
+            #"{"timestamp":"2026-11-01T10:00:00Z","type":"response_item","payload":{"type":"message","role":"user","content":"Repeat"}}"#,
+            #"{"timestamp":"2026-11-01T10:00:00Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","id":"u1","content":"Repeat"}}}"#,
+            #"{"timestamp":"2026-11-01T10:00:01Z","type":"response_item","payload":{"type":"message","role":"assistant","content":"Unmatched answer"}}"#,
+            #"{"timestamp":"2026-11-01T10:00:02Z","type":"response_item","payload":{"type":"message","role":"user","content":"Repeat"}}"#,
+            #"{"timestamp":"2026-11-01T10:00:02Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","id":"u2","content":"Repeat"}}}"#,
+            #"{"timestamp":"2026-11-01T10:00:03Z","type":"response_item","payload":{"type":"message","role":"assistant","content":"Paired answer"}}"#,
+            #"{"timestamp":"2026-11-01T10:00:03Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"AgentMessage","id":"a1","content":"Paired answer"}}}"#,
+            #"{"timestamp":"2026-11-01T10:00:04Z","type":"response_item","payload":{"type":"message","role":"user","content":"Unmatched request"}}"#,
+            #"{"timestamp":"2026-11-01T10:00:05Z","type":"event_msg","payload":{"type":"agent_message","message":"Different canonical answer"}}"#
+        ]
+        for split in 1..<lines.count {
+            let file = root.appendingPathComponent("split-\(split).jsonl")
+            let store = PayloadStore(rootURL: root.appendingPathComponent("Blobs"))
+            let checkpoints = CodexCheckpointStore(rootURL: root.appendingPathComponent("checkpoints-\(split)"))
+            let parser = CodexSessionParser()
+            try (lines.prefix(split).joined(separator: "\n") + "\n").write(to: file, atomically: true, encoding: .utf8)
+            _ = try await parser.parseIncrementally(fileURL: file, payloadStore: store, checkpointStore: checkpoints)
+            try Self.append(Data((lines.dropFirst(split).joined(separator: "\n") + "\n").utf8), to: file)
+            let resumed = try await parser.parseIncrementally(fileURL: file, payloadStore: store, checkpointStore: checkpoints)
+            let parsed = try await parser.parse(fileURL: file, payloadStore: store)
+            let full = try XCTUnwrap(parsed)
+            XCTAssertNotNil(resumed.resumedFromOffset)
+            XCTAssertEqual(full.steps.map(\.summary), ["Repeat", "Unmatched answer", "Repeat", "Paired answer", "Unmatched request", "Different canonical answer"])
+            XCTAssertEqual(resumed.session?.steps.map(\.identity), full.steps.map(\.identity), "split \(split)")
+            XCTAssertEqual(resumed.session?.steps.map(\.summary), full.steps.map(\.summary))
+            let unchanged = try await parser.parseIncrementally(fileURL: file, payloadStore: store, checkpointStore: checkpoints)
+            XCTAssertEqual(unchanged.bytesRead, 0)
+            XCTAssertEqual(unchanged.session?.steps.map(\.identity), full.steps.map(\.identity))
+        }
+    }
+
+    func testMessagesWithSameDisplayPrefixAreNotDeduplicated() async throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("long-messages.jsonl")
+        let prefix = String(repeating: "sample ", count: 100)
+        let records: [[String: Any]] = [
+            ["type": "response_item", "payload": ["type": "message", "role": "assistant", "content": prefix + "first answer"]],
+            ["type": "event_msg", "payload": ["type": "agent_message", "message": prefix + "different answer"]]
+        ]
+        let data = try records.reduce(into: Data()) { result, record in
+            result.append(try JSONSerialization.data(withJSONObject: record))
+            result.append(0x0A)
+        }
+        try data.write(to: file)
+        let parsed = try await CodexSessionParser().parse(fileURL: file, payloadStore: PayloadStore(rootURL: root.appendingPathComponent("Blobs")))
+        XCTAssertEqual(parsed?.steps.count, 2)
+        XCTAssertEqual(Set(parsed?.steps.compactMap(\.conversationDigest) ?? []).count, 2)
+    }
+
+    func testPreviousConversationCheckpointVersionForcesFullReimport() async throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("version.jsonl")
+        try (#"{"type":"event_msg","payload":{"type":"user_message","message":"Sample"}}"# + "\n").write(to: file, atomically: true, encoding: .utf8)
+        let cache = root.appendingPathComponent("Checkpoints")
+        let checkpoints = CodexCheckpointStore(rootURL: cache)
+        let store = PayloadStore(rootURL: root.appendingPathComponent("Blobs"))
+        let parser = CodexSessionParser()
+        _ = try await parser.parseIncrementally(fileURL: file, payloadStore: store, checkpointStore: checkpoints)
+        let checkpoint = try XCTUnwrap(FileManager.default.contentsOfDirectory(at: cache, includingPropertiesForKeys: nil).first)
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: checkpoint)) as? [String: Any])
+        XCTAssertEqual(json["version"] as? Int, 5)
+        json["version"] = 4
+        try JSONSerialization.data(withJSONObject: json).write(to: checkpoint)
+        let rebuilt = try await parser.parseIncrementally(fileURL: file, payloadStore: store, checkpointStore: checkpoints)
+        XCTAssertNil(rebuilt.resumedFromOffset)
+        XCTAssertGreaterThan(rebuilt.bytesRead, 0)
+        XCTAssertEqual(rebuilt.session?.steps.map(\.summary), ["Sample"])
+    }
+
+    func testLegacyPeerBlocksLibraryEvenWithoutHoldingLock() throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let legacy = ApplicationSupportPeerCopy(processIdentifier: .max - 3, launchDate: .distantPast, bundleURL: nil, isTerminated: false)
+        guard case .ownedByAnotherProcess(let owner) = ApplicationSupportLease.acquire(in: root, runningCopies: [legacy]) else {
+            return XCTFail("A legacy writer must block library access")
+        }
+        XCTAssertEqual(owner?.processIdentifier, legacy.processIdentifier)
+        guard case .acquired(let lease) = ApplicationSupportLease.acquire(in: root, runningCopies: []) else {
+            return XCTFail("The rejected launch must release its file lock")
+        }
+        lease.release()
+    }
+
+    @MainActor
+    func testClosingLastWindowKeepsMenuBarCompanionAlive() {
+        XCTAssertFalse(AgentTrailApplicationDelegate().applicationShouldTerminateAfterLastWindowClosed(NSApplication.shared))
     }
 }

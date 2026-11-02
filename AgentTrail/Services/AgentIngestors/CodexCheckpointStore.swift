@@ -11,7 +11,7 @@ struct CodexIncrementalParseResult: Sendable {
 }
 
 private struct CodexIngestionCheckpoint: Codable, Sendable {
-    static let currentVersion = 4
+    static let currentVersion = 5
 
     let version: Int
     let sourceKey: String
@@ -143,7 +143,7 @@ extension CodexSessionParser {
             )
             try await checkpointStore.save(refreshed)
             return CodexIncrementalParseResult(
-                session: unchanged,
+                session: Self.normalizedConversation(unchanged),
                 resumedFromOffset: startOffset,
                 bytesRead: 0,
                 checkpointWasReset: false,
@@ -168,8 +168,7 @@ extension CodexSessionParser {
             sourceIdentityURL: sourceURL,
             sourceModificationDate: before.modificationDate,
             knownToolNamesByCallID: Self.toolNamesByCallID(in: priorSession),
-            hasPriorCanonicalUserMessage: Self.hasCanonicalUserMessage(in: priorSession),
-            knownCanonicalEventTypes: Self.canonicalConversationEventTypes(in: priorSession)
+            retainsConversationCandidates: true
         )
         let after = try CodexFileSnapshot.capture(sourceURL)
         guard after == before else { throw TraceParserError.sourceChanged(sourceURL) }
@@ -193,7 +192,7 @@ extension CodexSessionParser {
         )
         try await checkpointStore.save(saved)
         return CodexIncrementalParseResult(
-            session: session,
+            session: Self.normalizedConversation(session),
             resumedFromOffset: canResume ? startOffset : nil,
             bytesRead: completeOffset - startOffset,
             checkpointWasReset: checkpoint != nil && !canResume,
@@ -245,7 +244,7 @@ extension CodexSessionParser {
         modificationDate: Date
     ) -> ParsedSession {
         guard let appended else { return updatedSession(existing, modificationDate: modificationDate) }
-        var steps = suppressConversationDuplicates(in: existing.steps + appended.steps)
+        var steps = existing.steps + appended.steps
         let identities = StableTraceIdentity.assignIdentities(to: steps.map(\.identityBase))
         steps = zip(steps, identities).map { step, identity in step.copy(identity: identity) }
         steps.sort {
@@ -306,50 +305,6 @@ extension CodexSessionParser {
                 names[callID] = toolName
             }
         }
-    }
-
-    private static func hasCanonicalUserMessage(in session: ParsedSession?) -> Bool {
-        session?.steps.contains {
-            CodexSessionParser.isCanonicalUserMessage(
-                eventType: $0.eventType,
-                searchText: $0.searchText
-            )
-        } == true
-    }
-
-    private static func canonicalConversationEventTypes(in session: ParsedSession?) -> Set<String> {
-        guard let session else { return [] }
-        return Set(session.steps.filter { !$0.isCompletedItem }.map(\.eventType))
-    }
-
-    private static func suppressConversationDuplicates(in steps: [ParsedStep]) -> [ParsedStep] {
-        var steps = steps
-        let hasCanonical = steps.contains {
-            CodexSessionParser.isCanonicalUserMessage(
-                eventType: $0.eventType,
-                searchText: $0.searchText
-            )
-        }
-        if hasCanonical {
-            steps.removeAll {
-                CodexSessionParser.isMirroredConversationEnvelope(
-                    outerType: $0.outerType,
-                    eventType: $0.eventType,
-                    role: $0.role
-                )
-            }
-        } else {
-            steps.removeAll {
-                $0.eventType == "message" && CodexSessionParser.isInjectedContext($0.summary)
-            }
-        }
-        let canonicalTypes = Set(steps.filter { !$0.isCompletedItem }.map(\.eventType))
-        steps.removeAll {
-            $0.isCompletedItem
-                && CodexSessionParser.conversationItemTypes.contains($0.eventType)
-                && canonicalTypes.contains($0.eventType)
-        }
-        return steps
     }
 
     private static func lastCompleteRecordOffset(in url: URL, fileSize: UInt64) throws -> UInt64 {

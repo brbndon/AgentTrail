@@ -88,7 +88,7 @@ struct SessionsListView: View {
                 message: appStore.statusMessage,
                 isLoading: appStore.isLoading,
                 progress: appStore.ingestionProgress,
-                visibleCount: sessions.count,
+                visibleCount: sessions.filter { $0.parentSessionID == nil }.count,
                 totalCount: appStore.totalAvailableSessionCount,
                 hasMoreSessions: appStore.hasMoreSessions,
                 nextPageCount: appStore.nextSessionPageCount,
@@ -99,8 +99,6 @@ struct SessionsListView: View {
             )
         }
         .navigationTitle("Sessions")
-        .onAppear { reconcileSelection() }
-        .onChange(of: sessions.map(\.id)) { _, _ in reconcileSelection() }
     }
 
     private func sessionRows(in group: ProjectSessionGroup, now: Date) -> some View {
@@ -110,10 +108,7 @@ struct SessionsListView: View {
         }
     }
 
-    private func reconcileSelection() {
-        let reconciled = SessionArrangement.reconciledSelection(current: selection, loadedIDs: sessions.map(\.id))
-        if reconciled != selection { selection = reconciled }
-    }
+
 }
 
 struct ProjectSessionGroup: Identifiable {

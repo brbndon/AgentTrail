@@ -46,6 +46,7 @@ struct ParsedStep: Codable, Sendable {
     let role: String?
     let outerType: String
     let isCompletedItem: Bool
+    let conversationDigest: String?
 
     init(
         identity: String,
@@ -68,7 +69,8 @@ struct ParsedStep: Codable, Sendable {
         eventType: String = "",
         role: String? = nil,
         outerType: String = "",
-        isCompletedItem: Bool = false
+        isCompletedItem: Bool = false,
+        conversationDigest: String? = nil
     ) {
         self.identity = TraceLimits.required(identity, to: TraceLimits.identity)
         self.index = TraceLimits.boundedNonNegative(index)
@@ -90,6 +92,7 @@ struct ParsedStep: Codable, Sendable {
         self.eventType = TraceLimits.required(eventType, to: TraceLimits.eventType)
         self.role = TraceLimits.bounded(role, to: TraceLimits.role, trim: true)?.lowercased()
         self.outerType = TraceLimits.required(outerType, to: TraceLimits.eventType)
+        self.conversationDigest = conversationDigest
         self.isCompletedItem = isCompletedItem
     }
 
@@ -115,7 +118,8 @@ struct ParsedStep: Codable, Sendable {
             eventType: eventType,
             role: role,
             outerType: outerType,
-            isCompletedItem: isCompletedItem
+            isCompletedItem: isCompletedItem,
+            conversationDigest: conversationDigest
         )
     }
 }

@@ -8,19 +8,21 @@ struct RootView: View {
     var body: some View {
         @Bindable var appStore = appStore
 
-        Group {
-            switch appStore.browsePreferences.layout {
-            case .classic:
-                NavigationSplitView {
-                    SessionsListView(selection: $appStore.selectedSessionID, limit: appStore.loadedSessionLimit)
-                        .id(appStore.loadedSessionLimit)
-                        .frame(minWidth: 270)
-                } detail: {
-                    detailContent
-                }
-            case .dashboard:
-                NavigationStack {
-                    detailContent
+        LoadedSelectionScope(limit: appStore.loadedSessionLimit) {
+            Group {
+                switch appStore.browsePreferences.layout {
+                case .classic:
+                    NavigationSplitView {
+                        SessionsListView(selection: $appStore.selectedSessionID, limit: appStore.loadedSessionLimit)
+                            .id(appStore.loadedSessionLimit)
+                            .frame(minWidth: 270)
+                    } detail: {
+                        detailContent
+                    }
+                case .dashboard:
+                    NavigationStack {
+                        detailContent
+                    }
                 }
             }
         }
@@ -64,7 +66,8 @@ struct RootView: View {
         } else {
             DashboardView(
                 limit: appStore.loadedSessionLimit,
-                showsSearch: appStore.browsePreferences.layout == .dashboard
+                showsSearch: appStore.browsePreferences.layout == .dashboard,
+                showsDiscoveryStatus: appStore.browsePreferences.layout == .dashboard
             )
             .id(appStore.loadedSessionLimit)
         }
@@ -147,5 +150,30 @@ struct EmptyStateView: View {
             }
         }
         .accessibilityElement(children: .combine)
+    }
+}
+
+/// Reconcile against loaded records independently of layout and search filtering.
+private struct LoadedSelectionScope<Content: View>: View {
+    @Environment(AppStore.self) private var appStore
+    @Query private var sessions: [SessionRecord]
+    let content: Content
+
+    init(limit: Int, @ViewBuilder content: () -> Content) {
+        var descriptor = FetchDescriptor<SessionRecord>(sortBy: [SortDescriptor(\SessionRecord.sourceModifiedAt, order: .reverse)])
+        descriptor.fetchLimit = max(limit, 1)
+        _sessions = Query(descriptor)
+        self.content = content()
+    }
+
+    var body: some View {
+        content
+            .onAppear { reconcile() }
+            .onChange(of: sessions.map(\.id)) { _, _ in reconcile() }
+    }
+
+    private func reconcile() {
+        let selection = SessionArrangement.reconciledSelection(current: appStore.selectedSessionID, loadedIDs: sessions.map(\.id))
+        if selection != appStore.selectedSessionID { appStore.selectedSessionID = selection }
     }
 }

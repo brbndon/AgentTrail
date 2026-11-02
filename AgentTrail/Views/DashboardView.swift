@@ -10,8 +10,10 @@ struct DashboardView: View {
     @Environment(AppStore.self) private var appStore
     @Query private var sessions: [SessionRecord]
     let showsSearch: Bool
+    var showsDiscoveryStatus = true
 
-    init(limit: Int, showsSearch: Bool) {
+    init(limit: Int, showsSearch: Bool, showsDiscoveryStatus: Bool = true) {
+        self.showsDiscoveryStatus = showsDiscoveryStatus
         self.showsSearch = showsSearch
         var descriptor = FetchDescriptor<SessionRecord>(
             sortBy: [SortDescriptor(\SessionRecord.sourceModifiedAt, order: .reverse)]
@@ -34,74 +36,79 @@ struct DashboardView: View {
         }
         .navigationTitle("Dashboard")
         .safeAreaInset(edge: .bottom) {
-            DiscoveryStatusBar(
-                message: appStore.statusMessage,
-                isLoading: appStore.isLoading,
-                progress: appStore.ingestionProgress,
-                visibleCount: sessions.count,
-                totalCount: appStore.totalAvailableSessionCount,
-                hasMoreSessions: appStore.hasMoreSessions,
-                nextPageCount: appStore.nextSessionPageCount,
-                sortNote: appStore.browsePreferences.sortField == .lastUpdated
-                    ? nil
-                    : "Sorted within the \(sessions.count) loaded sessions",
-                loadMore: appStore.loadMoreSessions
-            )
+            if showsDiscoveryStatus {
+                DiscoveryStatusBar(
+                    message: appStore.statusMessage,
+                    isLoading: appStore.isLoading,
+                    progress: appStore.ingestionProgress,
+                    visibleCount: sessions.filter { $0.parentSessionID == nil }.count,
+                    totalCount: appStore.totalAvailableSessionCount,
+                    hasMoreSessions: appStore.hasMoreSessions,
+                    nextPageCount: appStore.nextSessionPageCount,
+                    sortNote: appStore.browsePreferences.sortField == .lastUpdated
+                        ? nil
+                        : "Sorted within the \(sessions.count) loaded sessions",
+                    loadMore: appStore.loadMoreSessions
+                )
+            }
         }
     }
 
     @ViewBuilder
     private func content(now: Date) -> some View {
         let filtered = filteredSessions
-        if filtered.isEmpty {
-            EmptyStateView(
-                isLoading: appStore.isLoading,
-                statusMessage: appStore.statusMessage,
-                progress: appStore.ingestionProgress,
-                hasSessions: !sessions.isEmpty,
-                hasActiveFilters: hasActiveFilters,
-                clearFilters: {
-                    appStore.sidebarSearch = ""
-                    appStore.agentFilter = nil
-                }
-            )
-        } else {
-            let preferences = appStore.browsePreferences
-            let groups = SessionArrangement.groups(
-                sessions: filtered,
-                sort: preferences.sortField,
-                direction: preferences.sortDirection,
-                grouping: preferences.grouping,
-                totalCounts: appStore.projectSessionCounts
-            )
-            let live = filtered.filter { SessionLiveness.isRecentlyWriting($0, now: now) }
-            ScrollView {
-                VStack(alignment: .leading, spacing: 24) {
-                    header(filtered: filtered, liveCount: live.count)
-                    if !live.isEmpty {
-                        liveStrip(live)
+        VStack(alignment: .leading, spacing: 0) {
+            header(filtered: filtered, liveCount: filtered.filter { SessionLiveness.isRecentlyWriting($0, now: now) }.count)
+                .padding(24)
+            if filtered.isEmpty {
+                EmptyStateView(
+                    isLoading: appStore.isLoading,
+                    statusMessage: appStore.statusMessage,
+                    progress: appStore.ingestionProgress,
+                    hasSessions: !sessions.isEmpty,
+                    hasActiveFilters: hasActiveFilters,
+                    clearFilters: {
+                        appStore.sidebarSearch = ""
+                        appStore.agentFilter = nil
                     }
-                    ForEach(groups) { group in
-                        VStack(alignment: .leading, spacing: 12) {
-                            if group.showsHeader {
-                                groupHeader(group)
-                            }
-                            LazyVGrid(columns: Self.columns, alignment: .leading, spacing: 14) {
-                                ForEach(group.sessions) { session in
-                                    Button {
-                                        appStore.selectedSessionID = session.id
-                                    } label: {
-                                        SessionCardView(session: session, now: now, sortField: preferences.sortField)
+                )
+            } else {
+                let preferences = appStore.browsePreferences
+                let groups = SessionArrangement.groups(
+                    sessions: filtered,
+                    sort: preferences.sortField,
+                    direction: preferences.sortDirection,
+                    grouping: preferences.grouping,
+                    totalCounts: appStore.projectSessionCounts
+                )
+                let live = filtered.filter { SessionLiveness.isRecentlyWriting($0, now: now) }
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 24) {
+                        if !live.isEmpty {
+                            liveStrip(live)
+                        }
+                        ForEach(groups) { group in
+                            VStack(alignment: .leading, spacing: 12) {
+                                if group.showsHeader {
+                                    groupHeader(group)
+                                }
+                                LazyVGrid(columns: Self.columns, alignment: .leading, spacing: 14) {
+                                    ForEach(group.sessions) { session in
+                                        Button {
+                                            appStore.selectedSessionID = session.id
+                                        } label: {
+                                            SessionCardView(session: session, now: now, sortField: preferences.sortField)
+                                        }
+                                        .buttonStyle(.plain)
                                     }
-                                    .buttonStyle(.plain)
                                 }
                             }
                         }
                     }
+                    .padding(24)
+                    .frame(maxWidth: 1_400, alignment: .leading)
+                    .frame(maxWidth: .infinity)
                 }
-                .padding(24)
-                .frame(maxWidth: 1_400, alignment: .leading)
-                .frame(maxWidth: .infinity)
             }
         }
     }

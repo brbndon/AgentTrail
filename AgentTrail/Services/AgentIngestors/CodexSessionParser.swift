@@ -30,8 +30,7 @@ struct CodexSessionParser {
         sourceIdentityURL: URL? = nil,
         sourceModificationDate: Date? = nil,
         knownToolNamesByCallID: [String: String] = [:],
-        hasPriorCanonicalUserMessage: Bool = false,
-        knownCanonicalEventTypes: Set<String> = []
+        retainsConversationCandidates: Bool = false
     ) async throws -> ParsedSession? {
         guard Self.isRegularNonSymlink(fileURL) else { throw TraceParserError.unavailable(fileURL) }
         let identityURL = sourceIdentityURL ?? fileURL
@@ -59,6 +58,7 @@ struct CodexSessionParser {
             let toolName: String?
             let fileChanges: [ParsedFileChange]
             let isCompletedItem: Bool
+            let conversationDigest: String?
             var identity: String = ""
             var payloadReference: String?
         }
@@ -67,7 +67,6 @@ struct CodexSessionParser {
         var contextualWorkingDirectory = ""
         var metadataStartDate: Date?
         var canonicalTitle: String?
-        var hasCanonicalUserMessage = hasPriorCanonicalUserMessage
         var toolNamesByCallID = knownToolNamesByCallID
         var events: [RawEvent] = []
         var capped = false
@@ -116,7 +115,6 @@ struct CodexSessionParser {
             let text = Self.summary(payload: diagnosticPayload, embeddedPayload: embeddedPayload, eventType: eventType)
             let isCompletedItem = payloadType == "item_completed"
             if eventType == "user_message" {
-                hasCanonicalUserMessage = true
                 if canonicalTitle == nil, !text.isEmpty { canonicalTitle = text }
             }
             let fileChanges = JSONLineSupport.fileChanges(in: diagnosticPayload, eventType: eventType)
@@ -160,27 +158,13 @@ struct CodexSessionParser {
                 toolCallID: callID,
                 toolName: resolvedToolName,
                 fileChanges: fileChanges,
-                isCompletedItem: isCompletedItem
+                isCompletedItem: isCompletedItem,
+                conversationDigest: Self.conversationDigest(in: diagnosticPayload, eventType: eventType)
             ))
         }
 
         if firstStats.isMalformedOnly {
             throw TraceParserError.malformedOnly(fileURL)
-        }
-        if hasCanonicalUserMessage {
-            events.removeAll {
-                Self.isMirroredConversationEnvelope(outerType: $0.outerType, eventType: $0.eventType, role: $0.role)
-            }
-        } else {
-            events.removeAll {
-                $0.eventType == "message" && Self.isInjectedContext($0.text)
-            }
-        }
-        let canonicalTypes = Set(events.filter { !$0.isCompletedItem }.map(\.eventType)).union(knownCanonicalEventTypes)
-        events.removeAll {
-            $0.isCompletedItem
-                && Self.conversationItemTypes.contains($0.eventType)
-                && canonicalTypes.contains($0.eventType)
         }
         guard firstStats.validRecords > 0, !events.isEmpty else { return nil }
 
@@ -249,12 +233,13 @@ struct CodexSessionParser {
                 eventType: event.eventType,
                 role: event.role,
                 outerType: event.outerType,
-                isCompletedItem: event.isCompletedItem
+                isCompletedItem: event.isCompletedItem,
+                conversationDigest: event.conversationDigest
             )
         }
         let projectPath = TraceLimits.required(metadataWorkingDirectory.isEmpty ? contextualWorkingDirectory : metadataWorkingDirectory, to: TraceLimits.path)
         let sourceState: SessionSourceState = (firstStats.hasProblems || capped) ? .degraded : .scanned
-        return ParsedSession(
+        let session = ParsedSession(
             sourceKey: sourceKey,
             agentType: .codex,
             title: title,
@@ -269,6 +254,54 @@ struct CodexSessionParser {
             projectPath: projectPath,
             projectName: Self.projectName(for: projectPath),
             steps: steps
+        )
+        return retainsConversationCandidates ? session : Self.normalizedConversation(session)
+    }
+
+    private static func conversationDigest(in payload: [String: Any], eventType: String) -> String? {
+        guard ["message", "user_message", "agent_message"].contains(eventType),
+              let content = JSONLineSupport.firstValue(in: payload, keys: ["message", "content", "text"])
+        else { return nil }
+        // Match complete text, never the 180-character display summary.
+        let text = JSONLineSupport.compactText(from: content, limit: Int.max, maximumCharacters: PayloadStore.maximumPayloadBytes)
+        return StableTraceIdentity.payloadDigest(Data(text.utf8))
+    }
+
+    /// Checkpoints retain candidates so a later canonical record can replace a
+    /// mirror without losing unmatched messages or changing append-boundary behavior.
+    static func normalizedConversation(_ session: ParsedSession) -> ParsedSession {
+        struct Key: Hashable { let type: String; let text: String }
+        func representation(_ step: ParsedStep) -> (Key, Int)? {
+            let text = step.conversationDigest ?? (step.summary.count < 180 ? step.summary : step.identity)
+            if isMirroredConversationEnvelope(outerType: step.outerType, eventType: step.eventType, role: step.role) {
+                return (Key(type: step.role == "user" ? "user_message" : "agent_message", text: text), 2)
+            }
+            guard conversationItemTypes.contains(step.eventType) else { return nil }
+            return (Key(type: step.eventType, text: text), step.isCompletedItem ? 1 : 0)
+        }
+        var counts: [Key: [Int]] = [:]
+        for step in session.steps {
+            if let (key, rank) = representation(step) {
+                counts[key, default: [0, 0, 0]][rank] += 1
+            }
+        }
+        var seen: [Key: [Int]] = [:]
+        let steps = session.steps.filter { step in
+            if step.eventType == "message", isInjectedContext(step.summary) { return false }
+            guard let (key, rank) = representation(step) else { return true }
+            seen[key, default: [0, 0, 0]][rank] += 1
+            let replacements = counts[key, default: [0, 0, 0]].prefix(rank).max() ?? 0
+            return seen[key]![rank] > replacements
+        }.enumerated().map { $0.element.copy(index: $0.offset) }
+        let title = steps.first(where: { $0.eventType == "user_message" })?.summary
+            ?? steps.first(where: { $0.kind == .user })?.summary ?? session.title
+        return ParsedSession(
+            sourceKey: session.sourceKey, agentType: session.agentType, title: title,
+            startDate: session.startDate, endDate: steps.last?.timestamp,
+            workingDirectory: session.workingDirectory, sourcePath: session.sourcePath,
+            sourceModifiedAt: session.sourceModifiedAt, status: session.status,
+            sourceState: session.sourceState, projectIdentity: session.projectIdentity,
+            projectPath: session.projectPath, projectName: session.projectName, steps: steps
         )
     }
 
@@ -327,9 +360,8 @@ struct CodexSessionParser {
         "user_message", "agent_message", "reasoning", "plan", "context_compaction"
     ]
 
-    /// A user message is canonical whether it arrives as `event_msg.user_message`
-    /// or as a completed `UserMessage` item; both supersede the mirrored
-    /// `response_item.message` envelopes.
+    /// Both canonical user representations can supply the session title.
+    /// Duplicate suppression separately requires matching message content.
     static func isCanonicalUserMessage(eventType: String, searchText: String) -> Bool {
         eventType == "user_message"
             || searchText == "user_message"
