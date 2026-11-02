@@ -17,24 +17,16 @@ struct SessionsListView: View {
     }
 
     private var filteredSessions: [SessionRecord] {
-        let query = appStore.sidebarSearch.trimmingCharacters(in: .whitespacesAndNewlines)
-        return sessions.filter {
-            guard appStore.agentFilter == nil || $0.agentType == appStore.agentFilter else { return false }
-            return TraceSearch.matches(query, fields: [
-                $0.title,
-                $0.agentType.displayName,
-                $0.project?.name ?? "",
-                $0.workingDirectory,
-                $0.sourcePath,
-                $0.status.rawValue,
-                $0.sourceState.rawValue
-            ])
-        }
+        SessionArrangement.filtered(sessions, query: appStore.sidebarSearch, agent: appStore.agentFilter)
     }
 
-    private var projectGroups: [ProjectSessionGroup] {
-        SessionProjectGrouping.groups(
+    private var sessionGroups: [ProjectSessionGroup] {
+        let preferences = appStore.browsePreferences
+        return SessionArrangement.groups(
             sessions: filteredSessions,
+            sort: preferences.sortField,
+            direction: preferences.sortDirection,
+            grouping: preferences.grouping,
             totalCounts: appStore.projectSessionCounts
         )
     }
@@ -52,14 +44,17 @@ struct SessionsListView: View {
         // AppKit-backed List render-pure to avoid reentrant delegate updates.
         SwiftUI.TimelineView(.periodic(from: Self.timelineStart, by: SessionLiveness.tickInterval)) { context in
             List(selection: $selection) {
-                ForEach(projectGroups) { group in
-                    Section {
-                        ForEach(group.sessions) { session in
-                            SessionRowView(session: session, now: context.date)
-                                .tag(session.id)
+                ForEach(sessionGroups) { group in
+                    if group.showsHeader {
+                        Section {
+                            sessionRows(in: group, now: context.date)
+                        } header: {
+                            ProjectSectionHeader(name: group.name, sessionCount: group.totalCount)
                         }
-                    } header: {
-                        ProjectSectionHeader(name: group.name, sessionCount: group.totalCount)
+                    } else {
+                        Section {
+                            sessionRows(in: group, now: context.date)
+                        }
                     }
                 }
             }
@@ -67,7 +62,7 @@ struct SessionsListView: View {
         }
         .searchable(text: $appStore.sidebarSearch, placement: .sidebar, prompt: "Search loaded sessions")
         .safeAreaInset(edge: .top) {
-            Group {
+            VStack(alignment: .leading, spacing: 8) {
                 if availableAgents.count > 1 {
                     Picker("Agent", selection: $appStore.agentFilter) {
                         Text("All imported agents").tag(AgentType?.none)
@@ -81,6 +76,7 @@ struct SessionsListView: View {
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
+                SessionBrowseControls(preferences: appStore.browsePreferences)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 14)
@@ -96,24 +92,27 @@ struct SessionsListView: View {
                 totalCount: appStore.totalAvailableSessionCount,
                 hasMoreSessions: appStore.hasMoreSessions,
                 nextPageCount: appStore.nextSessionPageCount,
+                sortNote: appStore.browsePreferences.sortField == .lastUpdated
+                    ? nil
+                    : "Sorted within the \(sessions.count) loaded sessions",
                 loadMore: appStore.loadMoreSessions
             )
         }
         .navigationTitle("Sessions")
         .onAppear { reconcileSelection() }
-        .onChange(of: appStore.sidebarSearch) { _, _ in reconcileSelection() }
-        .onChange(of: appStore.agentFilter) { _, _ in reconcileSelection() }
         .onChange(of: sessions.map(\.id)) { _, _ in reconcileSelection() }
     }
 
-    private func reconcileSelection() {
-        if let selection {
-            if !filteredSessions.contains(where: { $0.id == selection }) {
-                self.selection = filteredSessions.first?.id
-            }
-        } else {
-            selection = filteredSessions.first?.id
+    private func sessionRows(in group: ProjectSessionGroup, now: Date) -> some View {
+        ForEach(group.sessions) { session in
+            SessionRowView(session: session, now: now, sortField: appStore.browsePreferences.sortField)
+                .tag(session.id)
         }
+    }
+
+    private func reconcileSelection() {
+        let reconciled = SessionArrangement.reconciledSelection(current: selection, loadedIDs: sessions.map(\.id))
+        if reconciled != selection { selection = reconciled }
     }
 }
 
@@ -122,6 +121,7 @@ struct ProjectSessionGroup: Identifiable {
     let name: String
     let totalCount: Int
     let sessions: [SessionRecord]
+    var showsHeader = true
 }
 
 enum SessionProjectGrouping {
@@ -176,7 +176,7 @@ private struct ProjectSectionHeader: View {
     }
 }
 
-private struct DiscoveryStatusBar: View {
+struct DiscoveryStatusBar: View {
     let message: String
     let isLoading: Bool
     let progress: IngestionProgress?
@@ -184,6 +184,7 @@ private struct DiscoveryStatusBar: View {
     let totalCount: Int
     let hasMoreSessions: Bool
     let nextPageCount: Int
+    var sortNote: String?
     let loadMore: () -> Void
 
     var body: some View {
@@ -215,6 +216,11 @@ private struct DiscoveryStatusBar: View {
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
             }
+            if let sortNote {
+                Text(sortNote)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
 
             if hasMoreSessions {
                 Button("Load \(nextPageCount) Older Sessions", systemImage: "arrow.down.circle", action: loadMore)
@@ -234,6 +240,7 @@ private struct DiscoveryStatusBar: View {
 private struct SessionRowView: View {
     let session: SessionRecord
     let now: Date
+    let sortField: SessionSortField
 
     private var isLive: Bool {
         SessionLiveness.isRecentlyWriting(session, now: now)
@@ -251,7 +258,11 @@ private struct SessionRowView: View {
                     .font(.body)
                     .lineLimit(2)
                 HStack(spacing: 5) {
-                    Text("Updated \(session.sourceModifiedAt, style: .relative)")
+                    if sortField == .started {
+                        Text("Started \(session.startDate, style: .relative)")
+                    } else {
+                        Text("Updated \(session.sourceModifiedAt, style: .relative)")
+                    }
                     Text("·")
                     Text("\(session.stepCount) events")
                     if session.sourceState == .degraded {

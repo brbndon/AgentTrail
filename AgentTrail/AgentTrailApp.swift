@@ -341,8 +341,8 @@ struct AgentTrailApp: App {
                 LibraryUnavailableView(issue: libraryAccessIssue)
                     .frame(minWidth: 440, idealWidth: 520, minHeight: 300, idealHeight: 360)
             } else {
-                SettingsView(directories: directories, payloadStore: payloadStore)
-                    .frame(minWidth: 440, idealWidth: 520, minHeight: 300, idealHeight: 360)
+                SettingsView(directories: directories, payloadStore: payloadStore, preferences: appStore.browsePreferences)
+                    .frame(minWidth: 440, idealWidth: 520, minHeight: 360, idealHeight: 440)
             }
         }
 

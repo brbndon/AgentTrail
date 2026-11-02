@@ -3,14 +3,29 @@ import SwiftUI
 struct SettingsView: View {
     let directories: AgentDirectories
     let payloadStore: PayloadStore
+    @Bindable var preferences: BrowsePreferences
 
-    init(directories: AgentDirectories, payloadStore: PayloadStore) {
+    init(directories: AgentDirectories, payloadStore: PayloadStore, preferences: BrowsePreferences) {
         self.directories = directories
         self.payloadStore = payloadStore
+        self.preferences = preferences
     }
 
     var body: some View {
         Form {
+            Section {
+                Picker("Layout", selection: $preferences.layout) {
+                    ForEach(AppLayoutStyle.allCases) { layout in
+                        Text(layout.displayName).tag(layout)
+                    }
+                }
+                .pickerStyle(.segmented)
+            } header: {
+                Text("Interface")
+            } footer: {
+                Text(preferences.layout.explanation)
+            }
+
             Section {
                 LabeledContent("Codex sessions") {
                     Text(directories.codexSessions.path)

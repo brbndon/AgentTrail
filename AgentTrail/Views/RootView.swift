@@ -4,41 +4,38 @@ import SwiftUI
 struct RootView: View {
     @Environment(AppStore.self) private var appStore
     @Environment(\.modelContext) private var modelContext
-    @Query private var latestSession: [SessionRecord]
-
-    init() {
-        var descriptor = FetchDescriptor<SessionRecord>(
-            sortBy: [SortDescriptor(\SessionRecord.sourceModifiedAt, order: .reverse)]
-        )
-        descriptor.fetchLimit = 1
-        _latestSession = Query(descriptor)
-    }
 
     var body: some View {
         @Bindable var appStore = appStore
 
-        NavigationSplitView {
-            SessionsListView(selection: $appStore.selectedSessionID, limit: appStore.loadedSessionLimit)
-                .id(appStore.loadedSessionLimit)
-                .frame(minWidth: 270)
-        } detail: {
-            if let selectedSessionID = appStore.selectedSessionID {
-                SelectedSessionView(sessionID: selectedSessionID, payloadStore: appStore.payloadStore)
-            } else {
-                EmptyStateView(
-                    isLoading: appStore.isLoading,
-                    statusMessage: appStore.statusMessage,
-                    progress: appStore.ingestionProgress,
-                    hasSessions: !latestSession.isEmpty,
-                    hasActiveFilters: !TraceSearch.terms(appStore.sidebarSearch).isEmpty || appStore.agentFilter != nil,
-                    clearFilters: {
-                        appStore.sidebarSearch = ""
-                        appStore.agentFilter = nil
-                    }
-                )
+        Group {
+            switch appStore.browsePreferences.layout {
+            case .classic:
+                NavigationSplitView {
+                    SessionsListView(selection: $appStore.selectedSessionID, limit: appStore.loadedSessionLimit)
+                        .id(appStore.loadedSessionLimit)
+                        .frame(minWidth: 270)
+                } detail: {
+                    detailContent
+                }
+            case .dashboard:
+                NavigationStack {
+                    detailContent
+                }
             }
         }
         .toolbar {
+            ToolbarItem(placement: .navigation) {
+                if appStore.selectedSessionID != nil {
+                    Button {
+                        appStore.selectedSessionID = nil
+                    } label: {
+                        Label("Dashboard", systemImage: "square.grid.2x2")
+                    }
+                    .keyboardShortcut("d", modifiers: [.command, .shift])
+                    .help("Return to the dashboard")
+                }
+            }
             ToolbarItem(placement: .primaryAction) {
                 Button {
                     appStore.refresh()
@@ -57,6 +54,19 @@ struct RootView: View {
             if appStore.selectedSessionID == nil {
                 appStore.statusMessage = "Select a session to search its timeline"
             }
+        }
+    }
+
+    @ViewBuilder
+    private var detailContent: some View {
+        if let selectedSessionID = appStore.selectedSessionID {
+            SelectedSessionView(sessionID: selectedSessionID, payloadStore: appStore.payloadStore)
+        } else {
+            DashboardView(
+                limit: appStore.loadedSessionLimit,
+                showsSearch: appStore.browsePreferences.layout == .dashboard
+            )
+            .id(appStore.loadedSessionLimit)
         }
     }
 }
@@ -113,14 +123,14 @@ struct EmptyStateView: View {
                         ProgressView()
                             .controlSize(.regular)
                     }
-                    Text("AgentTrail loads Codex history 30 threads at a time. Sessions appear in the sidebar as they import.")
+                    Text("AgentTrail loads Codex history 30 threads at a time. Sessions appear as they import.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
                         .frame(maxWidth: 360)
                 }
             } else if hasSessions && hasActiveFilters {
-                Text("Search and filters apply to loaded sessions. Clear them to see your sessions, or load older sessions from the sidebar.")
+                Text("Search and filters apply to loaded sessions. Clear them to see your sessions, or load older sessions.")
             } else if hasSessions {
                 Text("Select a trace from the sidebar to inspect its imported events.")
             } else {

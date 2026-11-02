@@ -46,6 +46,8 @@ final class AppStore {
 
     let agentDirectories: AgentDirectories
     let payloadStore: PayloadStore
+    /// Sort, grouping, and layout choices shared by every browsing surface.
+    let browsePreferences: BrowsePreferences
 
     private var hasBootstrapped = false
     private var modelContext: ModelContext?
@@ -73,8 +75,10 @@ final class AppStore {
         agentDirectories: AgentDirectories = AgentDirectories(),
         payloadStore: PayloadStore = PayloadStore(),
         startupMessage: String? = nil,
-        persistenceWarning: String? = nil
+        persistenceWarning: String? = nil,
+        browsePreferences: BrowsePreferences? = nil
     ) {
+        self.browsePreferences = browsePreferences ?? BrowsePreferences()
         self.modelContext = modelContext
         self.agentDirectories = agentDirectories
         self.payloadStore = payloadStore
