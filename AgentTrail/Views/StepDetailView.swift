@@ -5,6 +5,8 @@ struct StepDetailView: View {
     let step: StepRecord
     let onCreateBranch: () -> Void
     let viewMode: BrowseViewMode
+    let previousStep: (() -> Void)?
+    let nextStep: (() -> Void)?
 
     @State private var payloadText: String?
     @State private var payloadWasTruncated = false
@@ -14,19 +16,34 @@ struct StepDetailView: View {
     @State private var isPayloadExpanded = false
     let payloadStore: PayloadStore
 
-    init(step: StepRecord, payloadStore: PayloadStore, viewMode: BrowseViewMode = .technical, onCreateBranch: @escaping () -> Void) {
+    init(
+        step: StepRecord, payloadStore: PayloadStore, viewMode: BrowseViewMode = .technical,
+        previousStep: (() -> Void)? = nil, nextStep: (() -> Void)? = nil, onCreateBranch: @escaping () -> Void
+    ) {
         self.step = step
         self.payloadStore = payloadStore
         self.onCreateBranch = onCreateBranch
         self.viewMode = viewMode
+        self.previousStep = previousStep
+        self.nextStep = nextStep
     }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
                 header
-                metadata
+                if let command = step.commandText, !command.isEmpty {
+                    CommandBlockView(command: command, exitCode: step.exitCode)
+                }
                 summary
+                if !step.fileChanges.isEmpty {
+                    DetailSection(title: "File changes") {
+                        ForEach(step.fileChanges) { change in
+                            FileChangeDiffView(change: change, payloadStore: payloadStore)
+                        }
+                    }
+                }
+                metadata
                 if viewMode == .technical { rawPayload }
             }
             .padding(22)
@@ -46,9 +63,15 @@ struct StepDetailView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 10) {
-                    TraceKindBadge(kind: step.kind, hasError: step.hasError, viewMode: viewMode)
+                    Text(step.kind.plainLanguageName)
+                        .font(.headline)
+                    if step.hasError {
+                        Label("Error recorded", systemImage: "exclamationmark.triangle")
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
                     Text(step.title)
-                        .font(.title3.weight(.semibold))
+                        .font(.callout)
                         .textSelection(.enabled)
                     if viewMode == .technical {
                         Text("Step \(step.stepIndex + 1)")
@@ -57,14 +80,25 @@ struct StepDetailView: View {
                     }
                 }
                 Spacer()
-                Button {
-                    onCreateBranch()
-                } label: {
-                    Label("Create branch", systemImage: "arrow.triangle.branch")
+                Menu("Step actions", systemImage: "ellipsis.circle") {
+                    Button("Create branch", systemImage: "arrow.triangle.branch", action: onCreateBranch)
+                        .accessibilityLabel("Create a branch through this step")
                 }
-                .buttonStyle(.bordered)
-                .frame(minWidth: 44, minHeight: 44)
-                .accessibilityHint("Creates a child trace through this step")
+                .labelStyle(.iconOnly)
+                .accessibilityLabel("Step actions")
+            }
+            HStack {
+                Button("Previous", systemImage: "chevron.left") { previousStep?() }
+                    .disabled(previousStep == nil)
+                    .keyboardShortcut(.leftArrow, modifiers: [.command, .option])
+                    .help("Previous matching event (⌥⌘←)")
+                    .accessibilityLabel("Inspect previous matching event")
+                Spacer(minLength: 8)
+                Button("Next", systemImage: "chevron.right") { nextStep?() }
+                    .disabled(nextStep == nil)
+                    .keyboardShortcut(.rightArrow, modifiers: [.command, .option])
+                    .help("Next matching event (⌥⌘→)")
+                    .accessibilityLabel("Inspect next matching event")
             }
         }
     }
@@ -75,10 +109,7 @@ struct StepDetailView: View {
             if let path = step.filePath, !path.isEmpty {
                 DetailMetadataRow(title: "File", value: path)
             }
-            if let command = step.commandText, !command.isEmpty {
-                DetailMetadataRow(title: "Command", value: command, isMonospaced: true)
-            }
-            if let exitCode = step.exitCode {
+            if step.commandText == nil, let exitCode = step.exitCode {
                 DetailMetadataRow(title: "Exit code", value: "\(exitCode)")
             }
             if viewMode == .technical, let tokenCount = step.tokenCount {
@@ -106,9 +137,10 @@ struct StepDetailView: View {
             rawPayloadContent
                 .padding(.top, 9)
         } label: {
-            Text("Raw payload")
+            Text("Original data (JSON)")
                 .font(.headline)
         }
+        .accessibilityLabel("Original data in JSON format")
     }
 
     @ViewBuilder

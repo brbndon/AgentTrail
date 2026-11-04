@@ -30,6 +30,7 @@ struct TimelineView: View {
         let matchingSteps = orderedSteps.filter(filter.matches)
         let selectedStep = matchingSteps.first(where: { $0.id == selectedStepID }) ?? matchingSteps.first
         let errorIndex = TimelineErrorIndex(orderedSteps: orderedSteps, filter: filter)
+        let stepNavigation = TimelineStepNavigation(orderedIDs: matchingSteps.map(\.id), selection: selectedStep?.id)
 
         VStack(spacing: 0) {
             SwiftUI.TimelineView(.periodic(from: Self.timelineStart, by: SessionLiveness.tickInterval)) { context in
@@ -73,7 +74,11 @@ struct TimelineView: View {
                     .frame(minWidth: 430)
 
                     if isInspectorVisible, let selectedStep {
-                        StepDetailView(step: selectedStep, payloadStore: payloadStore, viewMode: preferences.viewMode) {
+                        StepDetailView(
+                            step: selectedStep, payloadStore: payloadStore, viewMode: preferences.viewMode,
+                            previousStep: stepNavigation.previous.map { id in { selectStep(id) } },
+                            nextStep: stepNavigation.next.map { id in { selectStep(id) } }
+                        ) {
                             branchStep = selectedStep
                         }
                         .id(selectedStep.id)
@@ -108,7 +113,11 @@ struct TimelineView: View {
             filter.kindRawValue = "all"
             filter.preset = .all
         }
-        selectedStepID = destination
+        selectStep(destination)
+    }
+
+    private func selectStep(_ id: UUID) {
+        selectedStepID = id
         errorNavigationID = UUID()
     }
 

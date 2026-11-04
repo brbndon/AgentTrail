@@ -33,6 +33,8 @@ final class SessionSummaryHeaderTests: XCTestCase {
             stepIndex: 2, kind: .assistant, timestamp: now.addingTimeInterval(-600),
             title: "Fixed ingestion", contentSummary: "Updated the parser to resume after incomplete records. All tests now pass.",
             searchText: "", fullPayloadRef: nil, hasError: false, filePath: "Sources/Parser.swift")
+        error.commandText = "swift test --filter ParserTests"
+        error.exitCode = 1
         let summary = SessionSummary(session: session, steps: [request, error, reply], now: now)
         session.steps = [request, error, reply]
 
@@ -58,6 +60,22 @@ final class SessionSummaryHeaderTests: XCTestCase {
                 timeline, size: NSSize(width: 970, height: 700), scheme: scheme,
                 name: "Timeline-Technical-\(name)", directory: directory)
             preferences.viewMode = .simple
+            let inspector = StepDetailView(
+                step: error, payloadStore: PayloadStore(rootURL: directory.appendingPathComponent("Blobs")),
+                previousStep: {}, nextStep: {}
+            ) {}
+            .environment(\.colorScheme, scheme)
+            try await capture(
+                inspector, size: NSSize(width: 460, height: 700), scheme: scheme,
+                name: "Inspector-\(name)", directory: directory)
+            let diff = FileChangeDiffContent(
+                preview: .available(FileChangeDiff(text: "@@ -1 +1 @@\n-old\n+new", format: .unifiedDiff, isTruncated: false)),
+                path: "Sources/Parser.swift"
+            )
+            .padding().environment(\.colorScheme, scheme)
+            try await capture(
+                diff, size: NSSize(width: 460, height: 320), scheme: scheme,
+                name: "Diff-\(name)", directory: directory)
         }
         print("Session summary renderings: \(directory.path)")
     }
