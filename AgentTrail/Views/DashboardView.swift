@@ -35,6 +35,9 @@ struct DashboardView: View {
             content(now: context.date)
         }
         .navigationTitle("Dashboard")
+        .task(id: appStore.sessionSummaryCache.request(for: sessions)) {
+            await appStore.sessionSummaryCache.prepare(sessions)
+        }
         .safeAreaInset(edge: .bottom) {
             if showsDiscoveryStatus {
                 DiscoveryStatusBar(
@@ -97,7 +100,9 @@ struct DashboardView: View {
                                         Button {
                                             appStore.selectedSessionID = session.id
                                         } label: {
-                                            SessionCardView(session: session, now: now, sortField: preferences.sortField)
+                                            SessionCardView(
+                                                session: session, now: now, sortField: preferences.sortField,
+                                                summary: appStore.sessionSummaryCache.summary(for: session, now: now))
                                         }
                                         .buttonStyle(.plain)
                                     }
@@ -125,7 +130,9 @@ struct DashboardView: View {
                 }
             }
             HStack(spacing: 12) {
-                StatTile(value: filtered.count, title: "Loaded sessions", systemImage: "tray.full")
+                StatTile(
+                    value: appStore.sessionSummaryCache.needsAttention(in: filtered), title: "Needs attention",
+                    systemImage: "exclamationmark.triangle")
                 StatTile(value: projectCount, title: projectCount == 1 ? "Project" : "Projects", systemImage: "folder")
                 StatTile(value: liveCount, title: "Live now", systemImage: "record.circle", highlight: liveCount > 0)
             }
@@ -220,7 +227,7 @@ struct DashboardView: View {
 }
 
 private struct StatTile: View {
-    let value: Int
+    let value: Int?
     let title: String
     let systemImage: String
     var highlight = false
@@ -233,7 +240,7 @@ private struct StatTile: View {
                 .frame(width: 28)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 0) {
-                Text("\(value)")
+                Text(value.map(String.init) ?? "…")
                     .font(.title2.weight(.semibold).monospacedDigit())
                 Text(title)
                     .font(.caption)
@@ -245,6 +252,33 @@ private struct StatTile: View {
         .frame(maxWidth: 220)
         .background(.quaternary.opacity(0.4), in: .rect(cornerRadius: 12))
         .accessibilityElement(children: .combine)
+        .accessibilityLabel(value.map { "\($0) \(title)" } ?? "Checking \(title)")
+    }
+}
+
+#Preview("Session card · Light") {
+    SessionCardPreview().preferredColorScheme(.light)
+}
+
+#Preview("Session card · Dark") {
+    SessionCardPreview().preferredColorScheme(.dark)
+}
+
+private struct SessionCardPreview: View {
+    var body: some View {
+        let session = SessionRecord(
+            sourceKey: "preview:card", agentType: .codex, title: "Repair the ingestion pipeline",
+            startDate: .now.addingTimeInterval(-1_800), endDate: .now.addingTimeInterval(-600),
+            workingDirectory: "/tmp/AgentTrail", sourcePath: "/tmp/card.jsonl", sourceModifiedAt: .now.addingTimeInterval(-600))
+        let reply = StepRecord(
+            stepIndex: 1, kind: .assistant, timestamp: .now.addingTimeInterval(-600), title: "Fixed importing",
+            contentSummary: "Updated the parser to resume after incomplete records.", searchText: "", fullPayloadRef: nil,
+            hasError: false, filePath: "Sources/Parser.swift")
+        SessionCardView(
+            session: session, now: .now, sortField: .lastUpdated,
+            summary: SessionSummary(session: session, steps: [reply], now: .now)
+        )
+        .padding().frame(width: 360)
     }
 }
 
@@ -253,6 +287,7 @@ struct SessionCardView: View {
     let session: SessionRecord
     let now: Date
     let sortField: SessionSortField
+    let summary: SessionSummary?
     @State private var isHovering = false
 
     private var isLive: Bool {
@@ -273,6 +308,12 @@ struct SessionCardView: View {
                     .foregroundStyle(.tint)
                     .accessibilityHidden(true)
                 Spacer(minLength: 0)
+                if let summary {
+                    Label(outcomeTitle(summary), systemImage: outcomeSymbol(summary))
+                        .font(.caption)
+                        .foregroundStyle(summary.errorCount > 0 ? .red : .secondary)
+                        .accessibilityLabel("Session outcome: \(outcomeTitle(summary))")
+                }
                 if session.isPinned {
                     Image(systemName: "pin.fill")
                         .font(.caption)
@@ -282,7 +323,7 @@ struct SessionCardView: View {
                     Label("Degraded", systemImage: "exclamationmark.triangle")
                         .font(.caption)
                         .foregroundStyle(.orange)
-                } else if isLive {
+                } else if isLive, summary == nil {
                     Label("Live", systemImage: "record.circle")
                         .font(.caption)
                         .foregroundStyle(.red)
@@ -293,6 +334,24 @@ struct SessionCardView: View {
                 .lineLimit(3)
                 .multilineTextAlignment(.leading)
                 .frame(maxWidth: .infinity, minHeight: 60, alignment: .topLeading)
+            if let summary {
+                Text(summary.finalAssistantMessage ?? "No assistant reply recorded.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .multilineTextAlignment(.leading)
+                HStack {
+                    Text(
+                        "\(summary.filesTouched.count) \(summary.filesTouched.count == 1 ? "file" : "files") · \(summary.errorCount) \(summary.errorCount == 1 ? "error" : "errors")"
+                    )
+                    Spacer(minLength: 6)
+                    Text(Duration.seconds(summary.duration).formatted(.units(allowed: [.hours, .minutes, .seconds], width: .abbreviated, maximumUnitCount: 2)))
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            } else {
+                ProgressView("Summarizing…").controlSize(.small)
+            }
             Label(session.project?.name ?? "Unknown project", systemImage: "folder")
                 .font(.callout)
                 .foregroundStyle(.secondary)
@@ -300,7 +359,7 @@ struct SessionCardView: View {
             HStack {
                 Text(dateText)
                 Spacer(minLength: 8)
-                Text("\(session.stepCount) events")
+                if let summary { Text("\(summary.stepCount) events") }
             }
             .font(.caption)
             .foregroundStyle(.secondary)
@@ -320,14 +379,34 @@ struct SessionCardView: View {
                 session.project?.name ?? "Unknown project",
                 session.title,
                 dateText,
-                "\(session.stepCount) events",
+                summary.map { "\($0.stepCount) events, \($0.filesTouched.count) files, \($0.errorCount) errors, \(outcomeTitle($0))" },
+                summary?.finalAssistantMessage,
+                summary.map {
+                    "Duration \(Duration.seconds($0.duration).formatted(.units(allowed: [.hours, .minutes, .seconds], width: .wide, maximumUnitCount: 2)))"
+                },
                 session.sourceState == .degraded ? "Degraded" : nil,
                 session.sourceState != .degraded && isLive ? "Live" : nil,
-                session.isPinned ? "Pinned" : nil
+                session.isPinned ? "Pinned" : nil,
             ]
             .compactMap { $0 }
             .joined(separator: ", ")
         )
         .accessibilityAddTraits(.isButton)
+    }
+
+    private func outcomeTitle(_ summary: SessionSummary) -> String {
+        switch summary.outcome {
+        case .completed: "Done"
+        case .hasErrors(let count): count == 1 ? "1 error" : "\(count) errors"
+        case .running: "Live"
+        }
+    }
+
+    private func outcomeSymbol(_ summary: SessionSummary) -> String {
+        switch summary.outcome {
+        case .completed: "checkmark.circle"
+        case .hasErrors: "exclamationmark.triangle"
+        case .running: "record.circle"
+        }
     }
 }

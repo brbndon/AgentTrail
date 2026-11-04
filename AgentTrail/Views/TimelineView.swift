@@ -53,7 +53,7 @@ struct TimelineView: View {
                 isInspectorVisible: $isInspectorVisible,
                 isSearchFocused: $isSearchFocused
             )
-            TimelineActiveFilters(filter: $filter)
+            TimelineActiveFilters(filter: $filter, viewMode: preferences.viewMode)
             Divider()
 
             if matchingSteps.isEmpty {
@@ -249,7 +249,7 @@ private struct TimelineToolbar: View {
                 .buttonStyle(.bordered)
                 .accessibilityLabel("Show more timeline filters")
                 .popover(isPresented: $isFilterPresented, arrowEdge: .top) {
-                    TimelineFilterPopover(filter: $filter)
+                    TimelineFilterPopover(filter: $filter, viewMode: viewMode)
                 }
             }
         }
@@ -260,13 +260,14 @@ private struct TimelineToolbar: View {
 
 private struct TimelineFilterPopover: View {
     @Binding var filter: TimelineFilter
+    let viewMode: BrowseViewMode
 
     var body: some View {
         Form {
             Picker("Step type", selection: $filter.kindRawValue) {
                 Text("All steps").tag("all")
                 ForEach(StepKind.allCases) { kind in
-                    Text(kind.displayName).tag(kind.rawValue)
+                    Text(viewMode == .simple ? kind.plainLanguageName : kind.displayName).tag(kind.rawValue)
                 }
             }
 
@@ -301,42 +302,52 @@ private struct TimelineEmptyState: View {
     }
 }
 
-#Preview("Timeline") {
-    let session = SessionRecord(
-        sourceKey: "preview",
-        agentType: .codex,
-        title: "Repair the ingestion pipeline",
-        startDate: .now.addingTimeInterval(-1_800),
-        endDate: .now,
-        workingDirectory: "/Users/example/AgentTrail",
-        sourcePath: "/Users/example/.codex/sessions/sample.jsonl",
-        sourceModifiedAt: .now
-    )
-    let firstStep = StepRecord(
-        stepIndex: 0,
-        kind: .user,
-        timestamp: .now.addingTimeInterval(-1_800),
-        title: "Repair the ingestion pipeline",
-        contentSummary: "Find why the live session stopped importing events.",
-        searchText: "repair ingestion pipeline live session stopped importing events",
-        fullPayloadRef: nil,
-        hasError: false,
-        session: session
-    )
-    let secondStep = StepRecord(
-        stepIndex: 1,
-        kind: .error,
-        timestamp: .now.addingTimeInterval(-900),
-        title: "Parser skipped a malformed record",
-        contentSummary: "The final JSONL line was incomplete while the agent was still writing.",
-        searchText: "parser skipped malformed record incomplete JSONL",
-        fullPayloadRef: nil,
-        hasError: true,
-        filePath: nil,
-        session: session
-    )
-    session.steps = [firstStep, secondStep]
-    return TimelineView(session: session, payloadStore: PayloadStore(), preferences: BrowsePreferences())
-        .frame(width: 1_100, height: 700)
-        .modelContainer(for: SessionRecord.self, inMemory: true)
+private struct InvestigationTimelinePreview: View {
+    var body: some View {
+        let session = SessionRecord(
+            sourceKey: "preview",
+            agentType: .codex,
+            title: "Repair the ingestion pipeline",
+            startDate: .now.addingTimeInterval(-1_800),
+            endDate: .now,
+            workingDirectory: "/Users/example/AgentTrail",
+            sourcePath: "/Users/example/.codex/sessions/sample.jsonl",
+            sourceModifiedAt: .now
+        )
+        let firstStep = StepRecord(
+            stepIndex: 0,
+            kind: .user,
+            timestamp: .now.addingTimeInterval(-1_800),
+            title: "Repair the ingestion pipeline",
+            contentSummary: "Find why the live session stopped importing events.",
+            searchText: "repair ingestion pipeline live session stopped importing events",
+            fullPayloadRef: nil,
+            hasError: false,
+            session: session
+        )
+        let secondStep = StepRecord(
+            stepIndex: 1,
+            kind: .error,
+            timestamp: .now.addingTimeInterval(-900),
+            title: "Parser skipped a malformed record",
+            contentSummary: "The final JSONL line was incomplete while the agent was still writing.",
+            searchText: "parser skipped malformed record incomplete JSONL",
+            fullPayloadRef: nil,
+            hasError: true,
+            filePath: nil,
+            session: session
+        )
+        session.steps = [firstStep, secondStep]
+        return TimelineView(session: session, payloadStore: PayloadStore(), preferences: BrowsePreferences())
+            .frame(width: 1_100, height: 700)
+            .modelContainer(for: SessionRecord.self, inMemory: true)
+    }
+}
+
+#Preview("Timeline · Light") {
+    InvestigationTimelinePreview().preferredColorScheme(.light)
+}
+
+#Preview("Timeline · Dark") {
+    InvestigationTimelinePreview().preferredColorScheme(.dark)
 }

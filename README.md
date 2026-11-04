@@ -10,6 +10,10 @@ AgentTrail is a local macOS viewer for understanding what coding agents did insi
 - Searches the loaded sessions, with a clear recovery action when search or filters match nothing.
 - Shows the active sort (last updated, date started, title, or event count, in either direction) and lets you list sessions flat or grouped by project. Sorting applies to the loaded sessions.
 - Offers two layouts in Settings: **Classic** (session list and timeline) and **Dashboard** (a full-window grid of session cards with a Live now strip). Classic shows the same dashboard grid whenever no session is selected, and the app opens on it.
+- Opens sessions with a collapsible request/result summary and a turn-based timeline; switch to **All events** for the flat list, or **Technical** for inline commands, step numbers, tokens, and original JSON. Simple/Technical preference persists locally.
+- Filters events by category, search, file, and date. Use **⌘[ / ⌘]** to navigate errors across step types, and **⌥⌘← / ⌥⌘→** to inspect adjacent matching events.
+- Previews recorded file diffs on demand. Unsupported or missing diffs are labeled unavailable; previews are limited to 128,000 characters or 2,000 lines and original JSON reads to 4 MB (the payload store retains its existing 64 MB integrity-read ceiling).
+- Shows outcomes, durations, file/error counts, and final replies on dashboard cards. **Needs attention** counts loaded, matching sessions with recorded errors; transient summaries are cached and rebuilt after import changes without altering the library schema.
 - Groups each globally newest-first page by project and shows total imported thread counts without loading full session histories.
 - Uses Codex `session_meta` and `turn_context` records to identify the workspace.
 - Uses canonical `user_message` and `agent_message` records (event messages or completed items) for clean task titles and conversation steps, without repeating matching mirrored response messages. Unmatched messages are retained.

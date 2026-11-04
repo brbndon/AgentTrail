@@ -76,6 +76,7 @@ final class SessionSummaryTests: XCTestCase {
         let expired = SessionSummary(session: session, steps: steps, now: now.addingTimeInterval(1))
         XCTAssertEqual(expired.outcome, .hasErrors(1))
         XCTAssertEqual(expired.duration, 600)
+        XCTAssertEqual(summary.updatingLiveness(session: session, now: now.addingTimeInterval(1)), expired)
     }
 
     func testRecentlyWrittenBranchIsCompleted() {

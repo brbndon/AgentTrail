@@ -59,6 +59,7 @@ struct TimelineFilter: Equatable, Sendable {
                 step.contentSummary,
                 step.searchText,
                 step.kind.displayName,
+                step.kind.plainLanguageName,
                 step.filePath,
                 step.commandText,
             ])

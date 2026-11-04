@@ -10,11 +10,12 @@ struct SessionSummary: Equatable, Sendable {
 
     let originalRequest: String?
     let finalAssistantMessage: String?
-    let duration: TimeInterval
+    private(set) var duration: TimeInterval
+    private let recordedDuration: TimeInterval
     let stepCount: Int
     let errorCount: Int
     let filesTouched: [String]
-    let outcome: Outcome
+    private(set) var outcome: Outcome
 
     init(session: SessionRecord, steps: [StepRecord], now: Date) {
         var firstUser: StepRecord?
@@ -43,14 +44,21 @@ struct SessionSummary: Equatable, Sendable {
         let isRunning = SessionLiveness.isRecentlyWriting(session, now: now)
         originalRequest = firstUser.map { $0.contentSummary.isEmpty ? $0.title : $0.contentSummary }
         finalAssistantMessage = lastAssistant.map { $0.contentSummary.isEmpty ? $0.title : $0.contentSummary }
-        duration = max(
-            0,
-            (isRunning ? now : max(session.endDate ?? latestTimestamp, latestTimestamp))
-                .timeIntervalSince(session.startDate))
+        recordedDuration = max(0, max(session.endDate ?? latestTimestamp, latestTimestamp).timeIntervalSince(session.startDate))
+        duration = isRunning ? max(0, now.timeIntervalSince(session.startDate)) : recordedDuration
         stepCount = steps.count
         errorCount = errors
         filesTouched = paths.sorted()
         // Recent writes take precedence even if earlier work recorded errors.
         outcome = isRunning ? .running : (errors > 0 ? .hasErrors(errors) : .completed)
+    }
+
+    /// Refresh the live badge and clock without rereading any step relationships.
+    func updatingLiveness(session: SessionRecord, now: Date) -> SessionSummary {
+        var updated = self
+        let isRunning = SessionLiveness.isRecentlyWriting(session, now: now)
+        updated.duration = isRunning ? max(0, now.timeIntervalSince(session.startDate)) : recordedDuration
+        updated.outcome = isRunning ? .running : (errorCount > 0 ? .hasErrors(errorCount) : .completed)
+        return updated
     }
 }

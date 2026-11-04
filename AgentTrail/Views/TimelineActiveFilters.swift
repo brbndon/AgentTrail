@@ -2,6 +2,7 @@ import SwiftUI
 
 struct TimelineActiveFilters: View {
     @Binding var filter: TimelineFilter
+    var viewMode: BrowseViewMode = .technical
 
     var body: some View {
         if filter.isActive {
@@ -9,7 +10,7 @@ struct TimelineActiveFilters: View {
                 HStack(spacing: 8) {
                     if !filter.query.isEmpty { chip("Search: \(filter.query)") { filter.query = "" } }
                     if filter.preset != .all { chip(filter.preset.title) { filter.preset = .all } }
-                    if let kind = filter.kind { chip(kind.displayName) { filter.kindRawValue = "all" } }
+                    if let kind = filter.kind { chip(viewMode == .simple ? kind.plainLanguageName : kind.displayName) { filter.kindRawValue = "all" } }
                     if filter.errorsOnly { chip("Errors only") { filter.errorsOnly = false } }
                     if !filter.filePathQuery.isEmpty { chip("File: \(filter.filePathQuery)") { filter.filePathQuery = "" } }
                     if filter.dateRange != .all { chip(filter.dateRange.title) { filter.dateRange = .all } }

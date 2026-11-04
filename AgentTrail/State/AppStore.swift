@@ -48,6 +48,7 @@ final class AppStore {
     let payloadStore: PayloadStore
     /// Sort, grouping, and layout choices shared by every browsing surface.
     let browsePreferences: BrowsePreferences
+    let sessionSummaryCache = SessionSummaryCache()
 
     private var hasBootstrapped = false
     private var modelContext: ModelContext?
@@ -640,6 +641,7 @@ final class AppStore {
                 }
                 return step
             }
+            sessionSummaryCache.invalidate(session.id)
         }
 
         if applySourceHealth, !report.sources.isEmpty {

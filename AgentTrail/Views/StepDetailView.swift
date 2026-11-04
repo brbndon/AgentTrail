@@ -252,19 +252,29 @@ private struct DetailSection<Content: View>: View {
     }
 }
 
-#Preview("Step detail") {
-    let step = StepRecord(
-        stepIndex: 4,
-        kind: .toolCall,
-        timestamp: .now,
-        title: "Run focused tests",
-        contentSummary: "swift test --filter ParserTests",
-        searchText: "run focused tests swift test ParserTests",
-        fullPayloadRef: nil,
-        hasError: false,
-        commandText: "swift test --filter ParserTests",
-        exitCode: 0
-    )
-    return StepDetailView(step: step, payloadStore: PayloadStore()) {}
-        .frame(width: 420, height: 620)
+private struct InspectorPreview: View {
+    var body: some View {
+        let step = StepRecord(
+            stepIndex: 4,
+            kind: .toolCall,
+            timestamp: .now,
+            title: "Run focused tests",
+            contentSummary: "swift test --filter ParserTests",
+            searchText: "run focused tests swift test ParserTests",
+            fullPayloadRef: nil,
+            hasError: false,
+            commandText: "swift test --filter ParserTests",
+            exitCode: 0
+        )
+        return StepDetailView(step: step, payloadStore: PayloadStore()) {}
+            .frame(width: 420, height: 620)
+    }
+}
+
+#Preview("Step detail · Light") {
+    InspectorPreview().preferredColorScheme(.light)
+}
+
+#Preview("Step detail · Dark") {
+    InspectorPreview().preferredColorScheme(.dark)
 }

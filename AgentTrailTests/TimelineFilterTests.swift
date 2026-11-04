@@ -3,6 +3,11 @@ import Foundation
 import XCTest
 
 final class TimelineFilterTests: XCTestCase {
+    func testSearchRecognizesPlainLanguageKindNames() {
+        XCTAssertTrue(TimelineFilter(query: "Ran a command").matches(makeStep(.shellCommand)))
+        XCTAssertTrue(TimelineFilter(query: "Edited a file").matches(makeStep(.fileChange)))
+    }
+
     func testPresetKindSetsAndErrorFlags() {
         for kind in StepKind.allCases {
             let step = makeStep(kind)

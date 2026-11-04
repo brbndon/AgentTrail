@@ -79,6 +79,6 @@ struct TimelineStepRow: View {
         .accessibilityLabel(
             viewMode == .simple ? "\(step.kind.plainLanguageName), \(step.title)" : "Step \(step.stepIndex + 1), \(step.kind.displayName), \(step.title)"
         )
-        .accessibilityValue(step.hasError ? "Error" : step.contentSummary)
+        .accessibilityValue(step.hasError ? "Error. \(step.contentSummary)" : step.contentSummary)
     }
 }

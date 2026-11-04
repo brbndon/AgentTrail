@@ -1405,6 +1405,8 @@ final class ParserTests: XCTestCase {
         let originalModifiedAt = session.sourceModifiedAt
 
         for state in [SessionSourceState.failed, .unavailable] {
+            await appStore.sessionSummaryCache.prepare([session])
+            XCTAssertNotNil(appStore.sessionSummaryCache.summary(for: session, now: .now))
             session.sourceStateRawValue = state.rawValue
             session.statusRawValue = state.rawValue
             try context.save()
@@ -1416,6 +1418,7 @@ final class ParserTests: XCTestCase {
             XCTAssertEqual(session.sourceState, .scanned)
             XCTAssertFalse([SessionStatus.failed, .unavailable].contains(session.status))
             XCTAssertEqual(session.steps.count, 1)
+            XCTAssertNil(appStore.sessionSummaryCache.summary(for: session, now: .now), "Reimport must invalidate even with unchanged mtime")
         }
     }
 

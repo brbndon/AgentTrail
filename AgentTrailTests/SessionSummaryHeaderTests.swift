@@ -37,6 +37,14 @@ final class SessionSummaryHeaderTests: XCTestCase {
         error.exitCode = 1
         let summary = SessionSummary(session: session, steps: [request, error, reply], now: now)
         session.steps = [request, error, reply]
+        let container = try AgentTrailPersistence.makeInMemoryContainer()
+        container.mainContext.insert(session)
+        try container.mainContext.save()
+        let appStore = AppStore(
+            modelContext: container.mainContext, agentDirectories: AgentDirectories(homeDirectory: directory),
+            payloadStore: PayloadStore(rootURL: directory.appendingPathComponent("Blobs")),
+            browsePreferences: BrowsePreferences(defaults: defaults))
+        await appStore.sessionSummaryCache.prepare([session])
 
         for (name, scheme) in [("Light", ColorScheme.light), ("Dark", ColorScheme.dark)] {
             let view = SessionSummaryHeader(summary: summary, filePathQuery: .constant(""))
@@ -49,7 +57,7 @@ final class SessionSummaryHeaderTests: XCTestCase {
             let timeline = TimelineView(
                 session: session, payloadStore: PayloadStore(rootURL: directory.appendingPathComponent("Blobs")), preferences: preferences
             )
-            .modelContainer(try AgentTrailPersistence.makeInMemoryContainer())
+            .modelContainer(container)
             .defaultAppStorage(defaults)
             .environment(\.colorScheme, scheme)
             try await capture(
@@ -76,6 +84,11 @@ final class SessionSummaryHeaderTests: XCTestCase {
             try await capture(
                 diff, size: NSSize(width: 460, height: 320), scheme: scheme,
                 name: "Diff-\(name)", directory: directory)
+            let dashboard = DashboardView(limit: AppStore.sessionPageSize, showsSearch: true, showsDiscoveryStatus: false)
+                .environment(appStore).modelContainer(container).environment(\.colorScheme, scheme)
+            try await capture(
+                dashboard, size: NSSize(width: 1_100, height: 700), scheme: scheme,
+                name: "Dashboard-\(name)", directory: directory)
         }
         print("Session summary renderings: \(directory.path)")
     }
