@@ -12,6 +12,7 @@ struct TimelineErrorIndex {
 
     init(orderedSteps: [StepRecord], filter: TimelineFilter) {
         var navigationFilter = filter
+        navigationFilter.preset = .all
         navigationFilter.kindRawValue = "all"
         orderedStepIDs = orderedSteps.map(\.id)
         errorIDs = orderedSteps.filter { $0.hasError && navigationFilter.matches($0) }.map(\.id)

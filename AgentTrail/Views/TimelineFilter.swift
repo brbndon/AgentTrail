@@ -18,6 +18,7 @@ enum TraceSearch {
 
 /// The lightweight, in-memory filters applied to a selected trace.
 struct TimelineFilter: Equatable, Sendable {
+    var preset: TimelineFilterPreset = .all
     var query = ""
     var kindRawValue = "all"
     var errorsOnly = false
@@ -29,22 +30,21 @@ struct TimelineFilter: Equatable, Sendable {
     }
 
     var isActive: Bool {
-        !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
-        kind != nil ||
-        errorsOnly ||
-        !filePathQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
-        dateRange != .all
+        preset != .all || !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || kind != nil || errorsOnly
+            || !filePathQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || dateRange != .all
     }
 
     /// Returns whether a normalized step satisfies every active filter.
     func matches(_ step: StepRecord) -> Bool {
+        if !preset.matches(step) { return false }
         if let kind, step.kind != kind { return false }
         if errorsOnly, !step.hasError { return false }
 
         let pathQuery = filePathQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         if !pathQuery.isEmpty {
-            let matchesPath = (step.filePath ?? "").localizedCaseInsensitiveContains(pathQuery) ||
-                step.fileChanges.contains { $0.path.localizedCaseInsensitiveContains(pathQuery) }
+            let matchesPath =
+                (step.filePath ?? "").localizedCaseInsensitiveContains(pathQuery)
+                || step.fileChanges.contains { $0.path.localizedCaseInsensitiveContains(pathQuery) }
             if !matchesPath { return false }
         }
 
@@ -52,20 +52,44 @@ struct TimelineFilter: Equatable, Sendable {
             return false
         }
 
-        if !TraceSearch.matches(query, fields: [
+        if !TraceSearch.matches(
+            query,
+            fields: [
                 step.title,
                 step.contentSummary,
                 step.searchText,
                 step.kind.displayName,
                 step.filePath,
-                step.commandText
-            ]) { return false }
+                step.commandText,
+            ])
+        {
+            return false
+        }
 
         return true
     }
 
     mutating func reset() {
         self = TimelineFilter()
+    }
+}
+
+enum TimelineFilterPreset: String, CaseIterable, Identifiable, Sendable {
+    case all, messages, actions, errors
+
+    var id: String { rawValue }
+    var title: String { rawValue.capitalized }
+
+    var kinds: Set<StepKind> {
+        switch self {
+        case .all, .errors: Set(StepKind.allCases)
+        case .messages: [.user, .assistant]
+        case .actions: [.toolCall, .toolResult, .fileChange, .shellCommand]
+        }
+    }
+
+    func matches(_ step: StepRecord) -> Bool {
+        kinds.contains(step.kind) && (self != .errors || step.hasError)
     }
 }
 

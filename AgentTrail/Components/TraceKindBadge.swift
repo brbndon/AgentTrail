@@ -16,9 +16,28 @@ struct TraceKindBadge: View {
             }
         }
         .font(.caption.weight(.medium))
-        .foregroundStyle(hasError ? .red : .secondary)
+        .foregroundStyle(hasError ? .red : kind.tint)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 3)
+        .background((hasError ? Color.red : kind.tint).opacity(0.12), in: .rect(cornerRadius: 8))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(hasError ? "Error, \(kind.displayName)" : kind.displayName)
+    }
+}
+
+extension StepKind {
+    var tint: Color {
+        switch self {
+        case .user: .blue
+        case .assistant: .teal
+        case .thought: .purple
+        case .toolCall: .orange
+        case .toolResult: .indigo
+        case .fileChange: .green
+        case .shellCommand: .brown
+        case .error: .red
+        case .system: .secondary
+        }
     }
 }
 

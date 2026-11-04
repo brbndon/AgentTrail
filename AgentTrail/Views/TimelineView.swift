@@ -10,7 +10,6 @@ struct TimelineView: View {
     @State private var selectedStepID: UUID?
     @State private var errorNavigationID = UUID()
     @State private var isInspectorVisible = true
-    @State private var isBranchGraphPresented = false
     @State private var branchStep: StepRecord?
     @FocusState private var isSearchFocused: Bool
 
@@ -47,9 +46,9 @@ struct TimelineView: View {
                 previousError: { navigateError(.previous, index: errorIndex, orderedSteps: orderedSteps) },
                 nextError: { navigateError(.next, index: errorIndex, orderedSteps: orderedSteps) },
                 isInspectorVisible: $isInspectorVisible,
-                isBranchGraphPresented: $isBranchGraphPresented,
                 isSearchFocused: $isSearchFocused
             )
+            TimelineActiveFilters(filter: $filter)
             Divider()
 
             if matchingSteps.isEmpty {
@@ -63,15 +62,15 @@ struct TimelineView: View {
                 }
             } else {
                 HSplitView {
-                    TimelineStepList(steps: matchingSteps, selection: $selectedStepID, errorNavigationID: errorNavigationID)
+                    TimelineStepList(steps: matchingSteps, sessionStart: session.startDate, selection: $selectedStepID, errorNavigationID: errorNavigationID)
                         .frame(minWidth: 430)
 
                     if isInspectorVisible, let selectedStep {
                         StepDetailView(step: selectedStep, payloadStore: payloadStore) {
                             branchStep = selectedStep
                         }
-                            .id(selectedStep.id)
-                            .frame(minWidth: 340, idealWidth: 410, maxWidth: 560)
+                        .id(selectedStep.id)
+                        .frame(minWidth: 340, idealWidth: 410, maxWidth: 560)
                     }
                 }
             }
@@ -100,6 +99,7 @@ struct TimelineView: View {
         // Keep the destination visible when the step-type picker excludes it.
         if let step = orderedSteps.first(where: { $0.id == destination }), !filter.matches(step) {
             filter.kindRawValue = "all"
+            filter.preset = .all
         }
         selectedStepID = destination
         errorNavigationID = UUID()
@@ -126,106 +126,98 @@ private struct TimelineToolbar: View {
     let previousError: () -> Void
     let nextError: () -> Void
     @Binding var isInspectorVisible: Bool
-    @Binding var isBranchGraphPresented: Bool
     @FocusState.Binding var isSearchFocused: Bool
     @State private var isFilterPresented = false
 
     var body: some View {
-        HStack(spacing: 10) {
-            HStack(spacing: 8) {
-                Image(systemName: "magnifyingglass")
-                    .foregroundStyle(.secondary)
-                    .accessibilityHidden(true)
-                TextField("Search trace", text: $filter.query)
-                    .textFieldStyle(.plain)
-                    .focused($isSearchFocused)
-                    .onSubmit {
-                        isSearchFocused = false
+        VStack(spacing: 10) {
+            HStack(spacing: 10) {
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(.secondary)
+                        .accessibilityHidden(true)
+                    TextField("Search trace", text: $filter.query)
+                        .textFieldStyle(.plain)
+                        .focused($isSearchFocused)
+                        .onSubmit {
+                            isSearchFocused = false
+                        }
+                        .accessibilityLabel("Search trace events")
+                    if !filter.query.isEmpty {
+                        Button {
+                            filter.query = ""
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                        .accessibilityLabel("Clear trace search")
                     }
-                    .accessibilityLabel("Search trace events")
-                if !filter.query.isEmpty {
-                    Button {
-                        filter.query = ""
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
-                    .accessibilityLabel("Clear trace search")
                 }
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
-            .background(.quaternary.opacity(0.55), in: .rect(cornerRadius: 8))
-            .frame(minWidth: 220, maxWidth: .infinity)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background(.quaternary.opacity(0.55), in: .rect(cornerRadius: 8))
+                .frame(minWidth: 220, maxWidth: .infinity)
 
-            Button {
-                isFilterPresented.toggle()
-            } label: {
-                Label("Filters", systemImage: filter.isActive ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
-            }
-            .buttonStyle(.bordered)
-            .popover(isPresented: $isFilterPresented, arrowEdge: .top) {
-                TimelineFilterPopover(filter: $filter)
-            }
+                HStack(spacing: 6) {
+                    Label(errorCount == 1 ? "1 error" : "\(errorCount) errors", systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(errorCount > 0 ? .red : .secondary)
+                        .accessibilityLabel("\(errorCount) errors matching search, file, and date filters across all step types")
 
-            Button {
-                isBranchGraphPresented.toggle()
-            } label: {
-                Label("Branches", systemImage: "arrow.triangle.branch")
-            }
-            .buttonStyle(.bordered)
-            .popover(isPresented: $isBranchGraphPresented, arrowEdge: .top) {
-                BranchGraphView(session: session)
-            }
+                    Button("Previous error", systemImage: "chevron.up", action: previousError)
+                        .labelStyle(.iconOnly)
+                        .accessibilityLabel("Go to previous error")
+                        .keyboardShortcut("[", modifiers: .command)
+                        .help("Previous error (⌘[)")
 
-            if filter.isActive {
-                Button("Clear filters") {
-                    filter.reset()
+                    Button("Next error", systemImage: "chevron.down", action: nextError)
+                        .labelStyle(.iconOnly)
+                        .accessibilityLabel("Go to next error")
+                        .keyboardShortcut("]", modifiers: .command)
+                        .help("Next error (⌘])")
                 }
-                .buttonStyle(.link)
-            }
+                .buttonStyle(.borderless)
+                .disabled(errorCount == 0)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background(.quaternary.opacity(0.55), in: .capsule)
 
-            Spacer(minLength: 12)
-
-            HStack(spacing: 6) {
-                Label(errorCount == 1 ? "1 error" : "\(errorCount) errors", systemImage: "exclamationmark.triangle")
+                Text("\(resultCount) of \(totalCount)")
                     .font(.caption)
-                    .foregroundStyle(errorCount > 0 ? .red : .secondary)
-                    .accessibilityLabel("\(errorCount) errors matching search, file, and date filters across all step types")
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel("Showing \(resultCount) of \(totalCount) events")
 
-                Button("Previous error", systemImage: "chevron.up", action: previousError)
-                    .labelStyle(.iconOnly)
-                    .accessibilityLabel("Go to previous error")
-                    .keyboardShortcut("[", modifiers: .command)
-                    .help("Previous error (⌘[)")
-
-                Button("Next error", systemImage: "chevron.down", action: nextError)
-                    .labelStyle(.iconOnly)
-                    .accessibilityLabel("Go to next error")
-                    .keyboardShortcut("]", modifiers: .command)
-                    .help("Next error (⌘])")
+                Button {
+                    isInspectorVisible.toggle()
+                } label: {
+                    Image(systemName: isInspectorVisible ? "sidebar.right" : "rectangle")
+                        .frame(minWidth: 28, minHeight: 28)
+                }
+                .buttonStyle(.bordered)
+                .accessibilityLabel(isInspectorVisible ? "Hide step inspector" : "Show step inspector")
+                .help(isInspectorVisible ? "Hide step inspector" : "Show step inspector")
             }
-            .buttonStyle(.borderless)
-            .disabled(errorCount == 0)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
-            .background(.quaternary.opacity(0.55), in: .capsule)
-
-            Text("\(resultCount) of \(totalCount)")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .accessibilityLabel("Showing \(resultCount) of \(totalCount) events")
-
-            Button {
-                isInspectorVisible.toggle()
-            } label: {
-                Image(systemName: isInspectorVisible ? "sidebar.right" : "sidebar.right")
-                    .frame(minWidth: 28, minHeight: 28)
+            HStack(spacing: 10) {
+                Picker("Event category", selection: $filter.preset) {
+                    ForEach(TimelineFilterPreset.allCases) { preset in
+                        Text(preset.title).tag(preset)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(maxWidth: 360)
+                .accessibilityLabel("Filter events by category")
+                Spacer(minLength: 0)
+                RelatedSessionsButton(session: session)
+                Button("More filters", systemImage: "line.3.horizontal.decrease.circle") {
+                    isFilterPresented.toggle()
+                }
+                .buttonStyle(.bordered)
+                .accessibilityLabel("Show more timeline filters")
+                .popover(isPresented: $isFilterPresented, arrowEdge: .top) {
+                    TimelineFilterPopover(filter: $filter)
+                }
             }
-            .buttonStyle(.bordered)
-            .accessibilityLabel(isInspectorVisible ? "Hide step inspector" : "Show step inspector")
-            .help(isInspectorVisible ? "Hide step inspector" : "Show step inspector")
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
@@ -244,8 +236,6 @@ private struct TimelineFilterPopover: View {
                 }
             }
 
-            Toggle("Errors only", isOn: $filter.errorsOnly)
-
             TextField("File path contains", text: $filter.filePathQuery)
                 .textFieldStyle(.roundedBorder)
 
@@ -263,6 +253,7 @@ private struct TimelineFilterPopover: View {
 
 private struct TimelineStepList: View {
     let steps: [StepRecord]
+    let sessionStart: Date
     @Binding var selection: UUID?
     let errorNavigationID: UUID
 
@@ -270,7 +261,7 @@ private struct TimelineStepList: View {
         ScrollViewReader { proxy in
             List(selection: $selection) {
                 ForEach(steps) { step in
-                    TimelineStepRow(step: step)
+                    TimelineStepRow(step: step, sessionStart: sessionStart)
                         .id(step.id)
                         .tag(step.id)
                         .listRowInsets(EdgeInsets(top: 8, leading: 14, bottom: 8, trailing: 14))
@@ -295,6 +286,7 @@ private struct TimelineStepList: View {
 
 private struct TimelineStepRow: View {
     let step: StepRecord
+    let sessionStart: Date
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
@@ -318,27 +310,36 @@ private struct TimelineStepRow: View {
                         .font(.caption.monospaced())
                         .foregroundStyle(.tertiary)
                     Spacer(minLength: 8)
-                    Text(step.timestamp, style: .time)
+                    Text(TimelineElapsedTime.label(timestamp: step.timestamp, sessionStart: sessionStart))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
 
                 Text(step.title)
                     .font(.callout.weight(.semibold))
-                    .lineLimit(2)
+                    .lineLimit(1)
 
                 Text(step.contentSummary)
                     .font(.callout)
                     .foregroundStyle(.secondary)
-                    .lineLimit(4)
+                    .lineLimit(2)
                     .textSelection(.enabled)
 
                 HStack(spacing: 10) {
                     if let path = step.filePath, !path.isEmpty {
                         Label(path, systemImage: "doc")
                             .lineLimit(1)
+                            .truncationMode(.middle)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 3)
+                            .background(.quaternary, in: .rect(cornerRadius: 8))
                     }
-                    if step.hasError {
+                    if let exitCode = step.exitCode, exitCode != 0 {
+                        Label("Exit \(exitCode)", systemImage: "exclamationmark.circle")
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 3)
+                            .background(.quaternary, in: .rect(cornerRadius: 8))
+                    } else if step.hasError {
                         Label("Error", systemImage: "exclamationmark.triangle")
                     }
                 }
@@ -406,4 +407,5 @@ private struct TimelineEmptyState: View {
     session.steps = [firstStep, secondStep]
     return TimelineView(session: session, payloadStore: PayloadStore())
         .frame(width: 1_100, height: 700)
+        .modelContainer(for: SessionRecord.self, inMemory: true)
 }
