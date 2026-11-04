@@ -4,6 +4,7 @@ import SwiftUI
 struct StepDetailView: View {
     let step: StepRecord
     let onCreateBranch: () -> Void
+    let viewMode: BrowseViewMode
 
     @State private var payloadText: String?
     @State private var payloadWasTruncated = false
@@ -13,10 +14,11 @@ struct StepDetailView: View {
     @State private var isPayloadExpanded = false
     let payloadStore: PayloadStore
 
-    init(step: StepRecord, payloadStore: PayloadStore, onCreateBranch: @escaping () -> Void) {
+    init(step: StepRecord, payloadStore: PayloadStore, viewMode: BrowseViewMode = .technical, onCreateBranch: @escaping () -> Void) {
         self.step = step
         self.payloadStore = payloadStore
         self.onCreateBranch = onCreateBranch
+        self.viewMode = viewMode
     }
 
     var body: some View {
@@ -25,14 +27,14 @@ struct StepDetailView: View {
                 header
                 metadata
                 summary
-                rawPayload
+                if viewMode == .technical { rawPayload }
             }
             .padding(22)
             .frame(maxWidth: 900, alignment: .leading)
         }
         .background(Color(nsColor: .windowBackgroundColor))
-        .task(id: isPayloadExpanded ? step.id : nil) {
-            guard isPayloadExpanded else {
+        .task(id: viewMode == .technical && isPayloadExpanded ? step.id : nil) {
+            guard viewMode == .technical, isPayloadExpanded else {
                 payloadLoadID = UUID()
                 return
             }
@@ -44,13 +46,15 @@ struct StepDetailView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 10) {
-                    TraceKindBadge(kind: step.kind, hasError: step.hasError)
+                    TraceKindBadge(kind: step.kind, hasError: step.hasError, viewMode: viewMode)
                     Text(step.title)
                         .font(.title3.weight(.semibold))
                         .textSelection(.enabled)
-                    Text("Step \(step.stepIndex + 1)")
-                        .font(.caption.monospaced())
-                        .foregroundStyle(.secondary)
+                    if viewMode == .technical {
+                        Text("Step \(step.stepIndex + 1)")
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 Spacer()
                 Button {
@@ -77,7 +81,7 @@ struct StepDetailView: View {
             if let exitCode = step.exitCode {
                 DetailMetadataRow(title: "Exit code", value: "\(exitCode)")
             }
-            if let tokenCount = step.tokenCount {
+            if viewMode == .technical, let tokenCount = step.tokenCount {
                 DetailMetadataRow(title: "Tokens", value: tokenCount.formatted())
             }
         }
@@ -229,6 +233,6 @@ private struct DetailSection<Content: View>: View {
         commandText: "swift test --filter ParserTests",
         exitCode: 0
     )
-    return StepDetailView(step: step, payloadStore: PayloadStore()) { }
+    return StepDetailView(step: step, payloadStore: PayloadStore()) {}
         .frame(width: 420, height: 620)
 }

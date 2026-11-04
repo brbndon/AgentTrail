@@ -75,6 +75,7 @@ struct RootView: View {
 }
 
 private struct SelectedSessionView: View {
+    @Environment(AppStore.self) private var appStore
     @Query private var sessions: [SessionRecord]
     let payloadStore: PayloadStore
 
@@ -86,7 +87,7 @@ private struct SelectedSessionView: View {
 
     var body: some View {
         if let session = sessions.first {
-            TimelineView(session: session, payloadStore: payloadStore)
+            TimelineView(session: session, payloadStore: payloadStore, preferences: appStore.browsePreferences)
                 .id(session.id)
         } else {
             ContentUnavailableView("Session unavailable", systemImage: "questionmark.folder")
@@ -100,7 +101,7 @@ struct EmptyStateView: View {
     var progress: IngestionProgress?
     var hasSessions = false
     var hasActiveFilters = false
-    var clearFilters: () -> Void = { }
+    var clearFilters: () -> Void = {}
 
     var body: some View {
         ContentUnavailableView {
@@ -137,11 +138,13 @@ struct EmptyStateView: View {
             } else if hasSessions {
                 Text("Select a trace from the sidebar to inspect its imported events.")
             } else {
-                Text(statusMessage.isEmpty
-                    ? "Use Refresh to scan ~/.codex/sessions for local Codex traces."
-                    : statusMessage)
-                    .multilineTextAlignment(.center)
-                    .textSelection(.enabled)
+                Text(
+                    statusMessage.isEmpty
+                        ? "Use Refresh to scan ~/.codex/sessions for local Codex traces."
+                        : statusMessage
+                )
+                .multilineTextAlignment(.center)
+                .textSelection(.enabled)
             }
         } actions: {
             if hasSessions && hasActiveFilters && !isLoading {

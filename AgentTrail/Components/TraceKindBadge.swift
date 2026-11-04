@@ -5,13 +5,16 @@ struct TraceKindBadge: View {
     let kind: StepKind
     let hasError: Bool
     var showsLabel = true
+    var viewMode: BrowseViewMode = .technical
+
+    private var title: String { viewMode == .simple ? kind.plainLanguageName : kind.displayName }
 
     var body: some View {
         Group {
             if showsLabel {
-                Label(kind.displayName, systemImage: kind.systemImage)
+                Label(title, systemImage: kind.systemImage)
             } else {
-                Label(kind.displayName, systemImage: kind.systemImage)
+                Label(title, systemImage: kind.systemImage)
                     .labelStyle(.iconOnly)
             }
         }
@@ -21,7 +24,7 @@ struct TraceKindBadge: View {
         .padding(.vertical, 3)
         .background((hasError ? Color.red : kind.tint).opacity(0.12), in: .rect(cornerRadius: 8))
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(hasError ? "Error, \(kind.displayName)" : kind.displayName)
+        .accessibilityLabel(hasError ? "Error, \(title)" : title)
     }
 }
 

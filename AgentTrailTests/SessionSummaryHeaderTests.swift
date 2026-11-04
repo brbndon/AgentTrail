@@ -43,13 +43,21 @@ final class SessionSummaryHeaderTests: XCTestCase {
             try await capture(
                 view, size: NSSize(width: 850, height: 330), scheme: scheme,
                 name: "Summary-\(name)", directory: directory)
-            let timeline = TimelineView(session: session, payloadStore: PayloadStore(rootURL: directory.appendingPathComponent("Blobs")))
-                .modelContainer(try AgentTrailPersistence.makeInMemoryContainer())
-                .defaultAppStorage(defaults)
-                .environment(\.colorScheme, scheme)
+            let preferences = BrowsePreferences(defaults: defaults)
+            let timeline = TimelineView(
+                session: session, payloadStore: PayloadStore(rootURL: directory.appendingPathComponent("Blobs")), preferences: preferences
+            )
+            .modelContainer(try AgentTrailPersistence.makeInMemoryContainer())
+            .defaultAppStorage(defaults)
+            .environment(\.colorScheme, scheme)
             try await capture(
                 timeline, size: NSSize(width: 970, height: 700), scheme: scheme,
                 name: "Timeline-\(name)", directory: directory)
+            preferences.viewMode = .technical
+            try await capture(
+                timeline, size: NSSize(width: 970, height: 700), scheme: scheme,
+                name: "Timeline-Technical-\(name)", directory: directory)
+            preferences.viewMode = .simple
         }
         print("Session summary renderings: \(directory.path)")
     }

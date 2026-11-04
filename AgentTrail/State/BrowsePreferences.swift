@@ -88,6 +88,7 @@ final class BrowsePreferences {
         static let sortDirection = "BrowseSortDirection"
         static let grouping = "BrowseGrouping"
         static let layout = "AppLayoutStyle"
+        static let viewMode = "BrowseViewMode"
     }
 
     private let defaults: UserDefaults
@@ -108,14 +109,20 @@ final class BrowsePreferences {
         didSet { defaults.set(layout.rawValue, forKey: Key.layout) }
     }
 
+    var viewMode: BrowseViewMode {
+        didSet { defaults.set(viewMode.rawValue, forKey: Key.viewMode) }
+    }
+
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         let field = defaults.string(forKey: Key.sortField).flatMap(SessionSortField.init(rawValue:)) ?? .lastUpdated
         sortField = field
-        sortDirection = defaults.string(forKey: Key.sortDirection).flatMap(SessionSortDirection.init(rawValue:))
+        sortDirection =
+            defaults.string(forKey: Key.sortDirection).flatMap(SessionSortDirection.init(rawValue:))
             ?? field.defaultDirection
         grouping = defaults.string(forKey: Key.grouping).flatMap(SessionGrouping.init(rawValue:)) ?? .project
         layout = defaults.string(forKey: Key.layout).flatMap(AppLayoutStyle.init(rawValue:)) ?? .classic
+        viewMode = defaults.string(forKey: Key.viewMode).flatMap(BrowseViewMode.init(rawValue:)) ?? .simple
     }
 
     /// Switching fields resets to that field's natural direction.
@@ -128,4 +135,10 @@ final class BrowsePreferences {
     var sortSummary: String {
         "\(sortField.displayName) · \(sortField.directionLabel(sortDirection))"
     }
+}
+
+enum BrowseViewMode: String, CaseIterable, Identifiable, Sendable {
+    case simple, technical
+    var id: String { rawValue }
+    var title: String { rawValue.capitalized }
 }

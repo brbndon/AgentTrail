@@ -5,6 +5,8 @@ struct TimelineView: View {
     private static let timelineStart = Date()
     let session: SessionRecord
     let payloadStore: PayloadStore
+    @Bindable var preferences: BrowsePreferences
+    @State private var presentation: TimelinePresentation = .turns
 
     @State private var filter = TimelineFilter()
     @State private var selectedStepID: UUID?
@@ -40,6 +42,8 @@ struct TimelineView: View {
             TimelineToolbar(
                 session: session,
                 filter: $filter,
+                presentation: $presentation,
+                viewMode: $preferences.viewMode,
                 resultCount: matchingSteps.count,
                 totalCount: orderedSteps.count,
                 errorCount: errorIndex.errorIDs.count,
@@ -62,11 +66,14 @@ struct TimelineView: View {
                 }
             } else {
                 HSplitView {
-                    TimelineStepList(steps: matchingSteps, sessionStart: session.startDate, selection: $selectedStepID, errorNavigationID: errorNavigationID)
-                        .frame(minWidth: 430)
+                    TimelineStepList(
+                        orderedSteps: orderedSteps, matchingSteps: matchingSteps, sessionStart: session.startDate, presentation: presentation,
+                        viewMode: preferences.viewMode, selection: $selectedStepID, errorNavigationID: errorNavigationID
+                    )
+                    .frame(minWidth: 430)
 
                     if isInspectorVisible, let selectedStep {
-                        StepDetailView(step: selectedStep, payloadStore: payloadStore) {
+                        StepDetailView(step: selectedStep, payloadStore: payloadStore, viewMode: preferences.viewMode) {
                             branchStep = selectedStep
                         }
                         .id(selectedStep.id)
@@ -120,6 +127,8 @@ struct TimelineView: View {
 private struct TimelineToolbar: View {
     let session: SessionRecord
     @Binding var filter: TimelineFilter
+    @Binding var presentation: TimelinePresentation
+    @Binding var viewMode: BrowseViewMode
     let resultCount: Int
     let totalCount: Int
     let errorCount: Int
@@ -158,6 +167,14 @@ private struct TimelineToolbar: View {
                 .padding(.vertical, 7)
                 .background(.quaternary.opacity(0.55), in: .rect(cornerRadius: 8))
                 .frame(minWidth: 220, maxWidth: .infinity)
+
+                Picker("Timeline layout", selection: $presentation) {
+                    ForEach(TimelinePresentation.allCases) { Text($0.title).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(width: 170)
+                .accessibilityLabel("Timeline layout")
 
                 HStack(spacing: 6) {
                     Label(errorCount == 1 ? "1 error" : "\(errorCount) errors", systemImage: "exclamationmark.triangle")
@@ -205,9 +222,17 @@ private struct TimelineToolbar: View {
                     }
                 }
                 .pickerStyle(.segmented)
-                .frame(maxWidth: 360)
+                .frame(maxWidth: 300)
+                .labelsHidden()
                 .accessibilityLabel("Filter events by category")
                 Spacer(minLength: 0)
+                Picker("Detail level", selection: $viewMode) {
+                    ForEach(BrowseViewMode.allCases) { Text($0.title).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(width: 180)
+                .accessibilityLabel("Simple or technical detail")
                 RelatedSessionsButton(session: session)
                 Button("More filters", systemImage: "line.3.horizontal.decrease.circle") {
                     isFilterPresented.toggle()
@@ -248,109 +273,6 @@ private struct TimelineFilterPopover: View {
         .formStyle(.grouped)
         .frame(width: 320)
         .padding(8)
-    }
-}
-
-private struct TimelineStepList: View {
-    let steps: [StepRecord]
-    let sessionStart: Date
-    @Binding var selection: UUID?
-    let errorNavigationID: UUID
-
-    var body: some View {
-        ScrollViewReader { proxy in
-            List(selection: $selection) {
-                ForEach(steps) { step in
-                    TimelineStepRow(step: step, sessionStart: sessionStart)
-                        .id(step.id)
-                        .tag(step.id)
-                        .listRowInsets(EdgeInsets(top: 8, leading: 14, bottom: 8, trailing: 14))
-                        .listRowSeparator(.hidden)
-                }
-            }
-            .listStyle(.plain)
-            .scrollContentBackground(.hidden)
-            .background(Color(nsColor: .controlBackgroundColor))
-            .onChange(of: selection) { _, selection in
-                if let selection { proxy.scrollTo(selection) }
-            }
-            .onChange(of: errorNavigationID) { _, _ in
-                if let selection { proxy.scrollTo(selection) }
-            }
-            .onAppear {
-                if let selection { proxy.scrollTo(selection) }
-            }
-        }
-    }
-}
-
-private struct TimelineStepRow: View {
-    let step: StepRecord
-    let sessionStart: Date
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            VStack(spacing: 3) {
-                Circle()
-                    .fill(step.hasError ? Color.red : Color.accentColor)
-                    .frame(width: 8, height: 8)
-                    .padding(.top, 5)
-                Rectangle()
-                    .fill(.quaternary)
-                    .frame(width: 1)
-                    .frame(maxHeight: .infinity)
-            }
-            .frame(width: 12)
-            .accessibilityHidden(true)
-
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    TraceKindBadge(kind: step.kind, hasError: step.hasError)
-                    Text("#\(step.stepIndex + 1)")
-                        .font(.caption.monospaced())
-                        .foregroundStyle(.tertiary)
-                    Spacer(minLength: 8)
-                    Text(TimelineElapsedTime.label(timestamp: step.timestamp, sessionStart: sessionStart))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                Text(step.title)
-                    .font(.callout.weight(.semibold))
-                    .lineLimit(1)
-
-                Text(step.contentSummary)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .textSelection(.enabled)
-
-                HStack(spacing: 10) {
-                    if let path = step.filePath, !path.isEmpty {
-                        Label(path, systemImage: "doc")
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 3)
-                            .background(.quaternary, in: .rect(cornerRadius: 8))
-                    }
-                    if let exitCode = step.exitCode, exitCode != 0 {
-                        Label("Exit \(exitCode)", systemImage: "exclamationmark.circle")
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 3)
-                            .background(.quaternary, in: .rect(cornerRadius: 8))
-                    } else if step.hasError {
-                        Label("Error", systemImage: "exclamationmark.triangle")
-                    }
-                }
-                .font(.caption)
-                .foregroundStyle(step.hasError ? .red : .secondary)
-            }
-        }
-        .padding(.vertical, 3)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Step \(step.stepIndex + 1), \(step.kind.displayName), \(step.title)")
-        .accessibilityValue(step.hasError ? "Error" : step.contentSummary)
     }
 }
 
@@ -405,7 +327,7 @@ private struct TimelineEmptyState: View {
         session: session
     )
     session.steps = [firstStep, secondStep]
-    return TimelineView(session: session, payloadStore: PayloadStore())
+    return TimelineView(session: session, payloadStore: PayloadStore(), preferences: BrowsePreferences())
         .frame(width: 1_100, height: 700)
         .modelContainer(for: SessionRecord.self, inMemory: true)
 }

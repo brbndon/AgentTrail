@@ -47,6 +47,20 @@ enum StepKind: String, CaseIterable, Codable, Identifiable, Sendable {
 
     var id: String { rawValue }
 
+    var plainLanguageName: String {
+        switch self {
+        case .user: "Your request"
+        case .assistant: "Agent reply"
+        case .thought: "Thinking"
+        case .toolCall: "Used a tool"
+        case .toolResult: "Tool output"
+        case .fileChange: "Edited a file"
+        case .shellCommand: "Ran a command"
+        case .error: "Something went wrong"
+        case .system: "Session update"
+        }
+    }
+
     var displayName: String {
         switch self {
         case .user: "User message"

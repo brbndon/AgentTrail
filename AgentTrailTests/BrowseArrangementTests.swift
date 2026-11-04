@@ -1,6 +1,6 @@
+@testable import AgentTrail
 import Foundation
 import XCTest
-@testable import AgentTrail
 
 @MainActor
 final class BrowseArrangementTests: XCTestCase {
@@ -86,7 +86,7 @@ final class BrowseArrangementTests: XCTestCase {
         let sessions = [
             makeSession("A1", project: "one", updated: 10),
             makeSession("B1", project: "two", updated: 30),
-            makeSession("A2", project: "one", updated: 20)
+            makeSession("A2", project: "one", updated: 20),
         ]
         let groups = SessionArrangement.groups(
             sessions: sessions, sort: .lastUpdated, direction: .descending, grouping: .project,
@@ -104,9 +104,10 @@ final class BrowseArrangementTests: XCTestCase {
     }
 
     func testEmptyInputHasNoGroups() {
-        XCTAssertTrue(SessionArrangement.groups(
-            sessions: [], sort: .title, direction: .ascending, grouping: .flat, totalCounts: [:]
-        ).isEmpty)
+        XCTAssertTrue(
+            SessionArrangement.groups(
+                sessions: [], sort: .title, direction: .ascending, grouping: .flat, totalCounts: [:]
+            ).isEmpty)
     }
 
     func testFilteringByQueryAndAgent() {
@@ -138,6 +139,7 @@ final class BrowseArrangementTests: XCTestCase {
         XCTAssertEqual(preferences.sortDirection, .descending)
         XCTAssertEqual(preferences.grouping, .project)
         XCTAssertEqual(preferences.layout, .classic)
+        XCTAssertEqual(preferences.viewMode, .simple)
         XCTAssertEqual(preferences.sortSummary, "Last updated · Newest first")
     }
 
@@ -150,12 +152,14 @@ final class BrowseArrangementTests: XCTestCase {
         preferences.sortDirection = .descending
         preferences.grouping = .flat
         preferences.layout = .dashboard
+        preferences.viewMode = .technical
 
         let reloaded = BrowsePreferences(defaults: defaults)
         XCTAssertEqual(reloaded.sortField, .title)
         XCTAssertEqual(reloaded.sortDirection, .descending)
         XCTAssertEqual(reloaded.grouping, .flat)
         XCTAssertEqual(reloaded.layout, .dashboard)
+        XCTAssertEqual(reloaded.viewMode, .technical)
 
         reloaded.select(sortField: .eventCount)
         XCTAssertEqual(reloaded.sortDirection, .descending)
@@ -167,10 +171,12 @@ final class BrowseArrangementTests: XCTestCase {
         defaults.set("bogus", forKey: "BrowseSortDirection")
         defaults.set("bogus", forKey: "BrowseGrouping")
         defaults.set("bogus", forKey: "AppLayoutStyle")
+        defaults.set("bogus", forKey: "BrowseViewMode")
         let preferences = BrowsePreferences(defaults: defaults)
         XCTAssertEqual(preferences.sortField, .lastUpdated)
         XCTAssertEqual(preferences.sortDirection, .descending)
         XCTAssertEqual(preferences.grouping, .project)
         XCTAssertEqual(preferences.layout, .classic)
+        XCTAssertEqual(preferences.viewMode, .simple)
     }
 }
