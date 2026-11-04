@@ -2,11 +2,13 @@ import SwiftUI
 
 /// The searchable, filterable event timeline for one imported agent session.
 struct TimelineView: View {
+    private static let timelineStart = Date()
     let session: SessionRecord
     let payloadStore: PayloadStore
 
     @State private var filter = TimelineFilter()
     @State private var selectedStepID: UUID?
+    @State private var errorNavigationID = UUID()
     @State private var isInspectorVisible = true
     @State private var isBranchGraphPresented = false
     @State private var branchStep: StepRecord?
@@ -26,13 +28,24 @@ struct TimelineView: View {
         let orderedSteps = self.orderedSteps
         let matchingSteps = orderedSteps.filter(filter.matches)
         let selectedStep = matchingSteps.first(where: { $0.id == selectedStepID }) ?? matchingSteps.first
+        let errorIndex = TimelineErrorIndex(orderedSteps: orderedSteps, filter: filter)
 
         VStack(spacing: 0) {
+            SwiftUI.TimelineView(.periodic(from: Self.timelineStart, by: SessionLiveness.tickInterval)) { context in
+                SessionSummaryHeader(
+                    summary: SessionSummary(session: session, steps: orderedSteps, now: context.date),
+                    filePathQuery: $filter.filePathQuery
+                )
+            }
+
             TimelineToolbar(
                 session: session,
                 filter: $filter,
                 resultCount: matchingSteps.count,
                 totalCount: orderedSteps.count,
+                errorCount: errorIndex.errorIDs.count,
+                previousError: { navigateError(.previous, index: errorIndex, orderedSteps: orderedSteps) },
+                nextError: { navigateError(.next, index: errorIndex, orderedSteps: orderedSteps) },
                 isInspectorVisible: $isInspectorVisible,
                 isBranchGraphPresented: $isBranchGraphPresented,
                 isSearchFocused: $isSearchFocused
@@ -50,7 +63,7 @@ struct TimelineView: View {
                 }
             } else {
                 HSplitView {
-                    TimelineStepList(steps: matchingSteps, selection: $selectedStepID)
+                    TimelineStepList(steps: matchingSteps, selection: $selectedStepID, errorNavigationID: errorNavigationID)
                         .frame(minWidth: 430)
 
                     if isInspectorVisible, let selectedStep {
@@ -82,6 +95,16 @@ struct TimelineView: View {
         }
     }
 
+    private func navigateError(_ direction: TimelineErrorIndex.Direction, index: TimelineErrorIndex, orderedSteps: [StepRecord]) {
+        guard let destination = index.destination(from: selectedStepID, direction: direction) else { return }
+        // Keep the destination visible when the step-type picker excludes it.
+        if let step = orderedSteps.first(where: { $0.id == destination }), !filter.matches(step) {
+            filter.kindRawValue = "all"
+        }
+        selectedStepID = destination
+        errorNavigationID = UUID()
+    }
+
     private func ensureSelection() {
         guard let firstStep = matchingSteps.first else {
             selectedStepID = nil
@@ -99,6 +122,9 @@ private struct TimelineToolbar: View {
     @Binding var filter: TimelineFilter
     let resultCount: Int
     let totalCount: Int
+    let errorCount: Int
+    let previousError: () -> Void
+    let nextError: () -> Void
     @Binding var isInspectorVisible: Bool
     @Binding var isBranchGraphPresented: Bool
     @FocusState.Binding var isSearchFocused: Bool
@@ -162,6 +188,30 @@ private struct TimelineToolbar: View {
 
             Spacer(minLength: 12)
 
+            HStack(spacing: 6) {
+                Label(errorCount == 1 ? "1 error" : "\(errorCount) errors", systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(errorCount > 0 ? .red : .secondary)
+                    .accessibilityLabel("\(errorCount) errors matching search, file, and date filters across all step types")
+
+                Button("Previous error", systemImage: "chevron.up", action: previousError)
+                    .labelStyle(.iconOnly)
+                    .accessibilityLabel("Go to previous error")
+                    .keyboardShortcut("[", modifiers: .command)
+                    .help("Previous error (⌘[)")
+
+                Button("Next error", systemImage: "chevron.down", action: nextError)
+                    .labelStyle(.iconOnly)
+                    .accessibilityLabel("Go to next error")
+                    .keyboardShortcut("]", modifiers: .command)
+                    .help("Next error (⌘])")
+            }
+            .buttonStyle(.borderless)
+            .disabled(errorCount == 0)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(.quaternary.opacity(0.55), in: .capsule)
+
             Text("\(resultCount) of \(totalCount)")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -214,19 +264,32 @@ private struct TimelineFilterPopover: View {
 private struct TimelineStepList: View {
     let steps: [StepRecord]
     @Binding var selection: UUID?
+    let errorNavigationID: UUID
 
     var body: some View {
-        List(selection: $selection) {
-            ForEach(steps) { step in
-                TimelineStepRow(step: step)
-                    .tag(step.id)
-                    .listRowInsets(EdgeInsets(top: 8, leading: 14, bottom: 8, trailing: 14))
-                    .listRowSeparator(.hidden)
+        ScrollViewReader { proxy in
+            List(selection: $selection) {
+                ForEach(steps) { step in
+                    TimelineStepRow(step: step)
+                        .id(step.id)
+                        .tag(step.id)
+                        .listRowInsets(EdgeInsets(top: 8, leading: 14, bottom: 8, trailing: 14))
+                        .listRowSeparator(.hidden)
+                }
+            }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .background(Color(nsColor: .controlBackgroundColor))
+            .onChange(of: selection) { _, selection in
+                if let selection { proxy.scrollTo(selection) }
+            }
+            .onChange(of: errorNavigationID) { _, _ in
+                if let selection { proxy.scrollTo(selection) }
+            }
+            .onAppear {
+                if let selection { proxy.scrollTo(selection) }
             }
         }
-        .listStyle(.plain)
-        .scrollContentBackground(.hidden)
-        .background(Color(nsColor: .controlBackgroundColor))
     }
 }
 

@@ -42,8 +42,10 @@ struct TimelineFilter: Equatable, Sendable {
         if errorsOnly, !step.hasError { return false }
 
         let pathQuery = filePathQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !pathQuery.isEmpty, !(step.filePath ?? "").localizedCaseInsensitiveContains(pathQuery) {
-            return false
+        if !pathQuery.isEmpty {
+            let matchesPath = (step.filePath ?? "").localizedCaseInsensitiveContains(pathQuery) ||
+                step.fileChanges.contains { $0.path.localizedCaseInsensitiveContains(pathQuery) }
+            if !matchesPath { return false }
         }
 
         if let startDate = dateRange.startDate, step.timestamp < startDate {
