@@ -38,7 +38,7 @@ final class SessionSummaryTests: XCTestCase {
         XCTAssertEqual(summary.stepCount, 0)
         XCTAssertEqual(summary.errorCount, 0)
         XCTAssertTrue(summary.filesTouched.isEmpty)
-        XCTAssertEqual(summary.outcome, .completed)
+        XCTAssertEqual(summary.outcome, .ended, "An empty session must not be reported as completed")
     }
 
     func testNoAssistantReplyAndMissingEndUseLastEventTime() {
@@ -48,7 +48,9 @@ final class SessionSummaryTests: XCTestCase {
         XCTAssertEqual(summary.originalRequest, "Request")
         XCTAssertNil(summary.finalAssistantMessage)
         XCTAssertEqual(summary.duration, 180)
-        XCTAssertEqual(summary.outcome, .completed)
+        XCTAssertEqual(summary.outcome, .ended)
+        let replied = SessionSummary(session: session, steps: [step(0, .user, "Request"), step(1, .assistant, "Done")], now: now)
+        XCTAssertEqual(replied.outcome, .completed)
     }
 
     func testOnlyErrorsIncludesAnyKindFlaggedAsError() {
@@ -79,11 +81,11 @@ final class SessionSummaryTests: XCTestCase {
         XCTAssertEqual(summary.updatingLiveness(session: session, now: now.addingTimeInterval(1)), expired)
     }
 
-    func testRecentlyWrittenBranchIsCompleted() {
+    func testRecentlyWrittenBranchIsNeverRunning() {
         let session = makeSession()
         session.sourceKey = "branch:summary"
         session.sourceModifiedAt = now
-        XCTAssertEqual(SessionSummary(session: session, steps: [], now: now).outcome, .completed)
+        XCTAssertEqual(SessionSummary(session: session, steps: [], now: now).outcome, .ended)
     }
 
     func testDurationNeverNegativeAndIncludesEventsBeyondEndMetadata() {

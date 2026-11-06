@@ -13,6 +13,7 @@ final class SessionSummaryHeaderTests: XCTestCase {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("AgentTrail-SummaryPreviews-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
 
         let now = Date.now
         let session = SessionRecord(
@@ -90,7 +91,21 @@ final class SessionSummaryHeaderTests: XCTestCase {
                 dashboard, size: NSSize(width: 1_100, height: 700), scheme: scheme,
                 name: "Dashboard-\(name)", directory: directory)
         }
-        print("Session summary renderings: \(directory.path)")
+    }
+
+    /// Samples the bitmap so a blank or text-free render cannot pass on file size alone.
+    private func distinctColorCount(in bitmap: NSBitmapImageRep) -> Int {
+        var colors = Set<UInt32>()
+        let step = 3
+        for y in stride(from: 0, to: bitmap.pixelsHigh, by: step) {
+            for x in stride(from: 0, to: bitmap.pixelsWide, by: step) {
+                guard let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { continue }
+                let channels = [color.redComponent, color.greenComponent, color.blueComponent].map { UInt32($0 * 255) }
+                colors.insert(channels[0] << 16 | channels[1] << 8 | channels[2])
+                if colors.count > 64 { return colors.count }
+            }
+        }
+        return colors.count
     }
 
     @MainActor
@@ -113,6 +128,7 @@ final class SessionSummaryHeaderTests: XCTestCase {
         hostingView.cacheDisplay(in: hostingView.bounds, to: bitmap)
         let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
         XCTAssertGreaterThan(png.count, 1_000)
+        XCTAssertGreaterThan(distinctColorCount(in: bitmap), 12, "\(name) rendered blank or without text")
         try png.write(to: directory.appendingPathComponent("\(name).png"))
         let attachment = XCTAttachment(data: png, uniformTypeIdentifier: "public.png")
         attachment.name = name

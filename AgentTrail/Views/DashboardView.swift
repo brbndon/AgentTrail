@@ -397,16 +397,11 @@ struct SessionCardView: View {
     private func outcomeTitle(_ summary: SessionSummary) -> String {
         switch summary.outcome {
         case .completed: "Done"
+        case .ended: "Ended"
         case .hasErrors(let count): count == 1 ? "1 error" : "\(count) errors"
         case .running: "Live"
         }
     }
 
-    private func outcomeSymbol(_ summary: SessionSummary) -> String {
-        switch summary.outcome {
-        case .completed: "checkmark.circle"
-        case .hasErrors: "exclamationmark.triangle"
-        case .running: "record.circle"
-        }
-    }
+    private func outcomeSymbol(_ summary: SessionSummary) -> String { summary.outcome.symbolName }
 }

@@ -40,6 +40,22 @@ final class TimelineFilterTests: XCTestCase {
         XCTAssertEqual(index.errorIDs, [step.id])
     }
 
+    func testRevealingClearsOnlyCategoryAndKindFiltersThatHideTheStep() {
+        let step = makeStep(.shellCommand)
+        step.hasError = true
+        step.filePath = "Sources/App.swift"
+        let hidden = TimelineFilter(preset: .messages, query: "command", kindRawValue: StepKind.user.rawValue, filePathQuery: "Sources")
+        let revealed = hidden.revealing(step)
+        XCTAssertTrue(revealed.matches(step))
+        XCTAssertEqual(revealed.preset, .all)
+        XCTAssertEqual(revealed.kindRawValue, "all")
+        XCTAssertEqual(revealed.query, "command")
+        XCTAssertEqual(revealed.filePathQuery, "Sources")
+
+        let visible = TimelineFilter(preset: .actions, query: "command")
+        XCTAssertEqual(visible.revealing(step), visible, "A visible destination must leave every filter untouched")
+    }
+
     func testElapsedTimeFormatting() {
         let start = Date(timeIntervalSince1970: 0)
         for (seconds, expected) in [(-1, "+0s"), (0, "+0s"), (59, "+59s"), (134, "+2m 14s"), (3_661, "+1h 1m 1s")] {

@@ -49,6 +49,27 @@ final class TimelineTurnTests: XCTestCase {
         XCTAssertNil(TimelineTurn.workBlockID(containing: events[3].id, in: turns, visibleIDs: []))
     }
 
+    func testSelectionKeepsVisibleStepOtherwiseFallsBackToFirstVisible() {
+        let ids = [UUID(), UUID(), UUID()]
+        XCTAssertEqual(TimelineSelection.reconciled(current: ids[1], matchingIDs: ids), ids[1])
+        XCTAssertEqual(TimelineSelection.reconciled(current: ids[0], matchingIDs: [ids[1], ids[2]]), ids[1])
+        XCTAssertEqual(TimelineSelection.reconciled(current: nil, matchingIDs: ids), ids[0])
+        XCTAssertNil(TimelineSelection.reconciled(current: ids[0], matchingIDs: []))
+    }
+
+    func testFilteredSelectionStillMapsToItsWorkBlockForAutoExpansion() {
+        let events = [step(0, .user), step(1, .shellCommand), step(2, .shellCommand), step(3, .assistant), step(4, .shellCommand)]
+        events[2].hasError = true
+        let turns = TimelineTurn.group(orderedSteps: events)
+        let visible = Set(events.filter { $0.hasError }.map(\.id))
+        let blockID = TimelineTurn.workBlockID(containing: events[2].id, in: turns, visibleIDs: visible)
+        XCTAssertEqual(blockID, events[1].id, "The folded block is keyed by its first step even when that step is filtered out")
+        let block = turns.flatMap(\.blocks).first { $0.id == blockID }
+        XCTAssertEqual(block?.matchingSteps(visible).map(\.id), [events[2].id])
+        XCTAssertEqual(block?.hasError, true)
+        XCTAssertNil(TimelineTurn.workBlockID(containing: events[4].id, in: turns, visibleIDs: visible))
+    }
+
     private func step(_ index: Int, _ kind: StepKind) -> StepRecord {
         StepRecord(
             stepIndex: index, kind: kind, timestamp: .now, title: kind.displayName, contentSummary: "Message", searchText: "",

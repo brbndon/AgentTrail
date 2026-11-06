@@ -1418,7 +1418,7 @@ final class ParserTests: XCTestCase {
             XCTAssertEqual(session.sourceState, .scanned)
             XCTAssertFalse([SessionStatus.failed, .unavailable].contains(session.status))
             XCTAssertEqual(session.steps.count, 1)
-            XCTAssertNil(appStore.sessionSummaryCache.summary(for: session, now: .now), "Reimport must invalidate even with unchanged mtime")
+            XCTAssertFalse(appStore.sessionSummaryCache.isCurrent(session), "Reimport must invalidate even with unchanged mtime")
         }
     }
 

@@ -4,8 +4,26 @@ import Foundation
 struct SessionSummary: Equatable, Sendable {
     enum Outcome: Equatable, Sendable {
         case completed
+        /// Stopped writing without an assistant reply or recorded errors, so success cannot be claimed.
+        case ended
         case hasErrors(Int)
         case running
+
+        var symbolName: String {
+            switch self {
+            case .completed: "checkmark.circle"
+            case .ended: "stop.circle"
+            case .hasErrors: "exclamationmark.triangle"
+            case .running: "record.circle"
+            }
+        }
+
+        static func resolve(isRunning: Bool, errorCount: Int, hasFinalReply: Bool) -> Outcome {
+            // Recent writes take precedence even if earlier work recorded errors.
+            if isRunning { return .running }
+            if errorCount > 0 { return .hasErrors(errorCount) }
+            return hasFinalReply ? .completed : .ended
+        }
     }
 
     let originalRequest: String?
@@ -49,8 +67,7 @@ struct SessionSummary: Equatable, Sendable {
         stepCount = steps.count
         errorCount = errors
         filesTouched = paths.sorted()
-        // Recent writes take precedence even if earlier work recorded errors.
-        outcome = isRunning ? .running : (errors > 0 ? .hasErrors(errors) : .completed)
+        outcome = .resolve(isRunning: isRunning, errorCount: errors, hasFinalReply: finalAssistantMessage != nil)
     }
 
     /// Refresh the live badge and clock without rereading any step relationships.
@@ -58,7 +75,7 @@ struct SessionSummary: Equatable, Sendable {
         var updated = self
         let isRunning = SessionLiveness.isRecentlyWriting(session, now: now)
         updated.duration = isRunning ? max(0, now.timeIntervalSince(session.startDate)) : recordedDuration
-        updated.outcome = isRunning ? .running : (errorCount > 0 ? .hasErrors(errorCount) : .completed)
+        updated.outcome = .resolve(isRunning: isRunning, errorCount: errorCount, hasFinalReply: finalAssistantMessage != nil)
         return updated
     }
 }

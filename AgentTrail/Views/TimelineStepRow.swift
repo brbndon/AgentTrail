@@ -79,6 +79,18 @@ struct TimelineStepRow: View {
         .accessibilityLabel(
             viewMode == .simple ? "\(step.kind.plainLanguageName), \(step.title)" : "Step \(step.stepIndex + 1), \(step.kind.displayName), \(step.title)"
         )
-        .accessibilityValue(step.hasError ? "Error. \(step.contentSummary)" : step.contentSummary)
+        .accessibilityValue(accessibilityDetail)
+    }
+
+    /// Everything the visible chips convey, since the combined row replaces its children.
+    private var accessibilityDetail: String {
+        var parts: [String] = []
+        if step.hasError { parts.append("Error") }
+        parts.append(step.contentSummary)
+        parts.append("\(TimelineElapsedTime.label(timestamp: step.timestamp, sessionStart: sessionStart)) into the session")
+        if let path = step.filePath, !path.isEmpty { parts.append("File \(path)") }
+        if let exitCode = step.exitCode, exitCode != 0 { parts.append("Exit code \(exitCode)") }
+        if viewMode == .technical, let command = step.commandText, !command.isEmpty { parts.append("Command \(command)") }
+        return parts.joined(separator: ". ")
     }
 }

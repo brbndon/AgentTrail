@@ -14,3 +14,12 @@ struct TimelineStepNavigation {
         next = index + 1 < orderedIDs.count ? orderedIDs[index + 1] : nil
     }
 }
+
+enum TimelineSelection {
+    /// Keeps a still-visible selection, otherwise falls back to the first visible event (nil when none remain).
+    static func reconciled(current: UUID?, matchingIDs: [UUID]) -> UUID? {
+        guard let first = matchingIDs.first else { return nil }
+        if let current, matchingIDs.contains(current) { return current }
+        return first
+    }
+}

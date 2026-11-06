@@ -9,22 +9,17 @@ struct SessionSummaryHeader: View {
     private var outcomeTitle: String {
         switch summary.outcome {
         case .completed: "Completed"
+        case .ended: "Ended without a reply"
         case .hasErrors(let count): count == 1 ? "1 error" : "\(count) errors"
         case .running: "Running"
         }
     }
 
-    private var outcomeSymbol: String {
-        switch summary.outcome {
-        case .completed: "checkmark.circle"
-        case .hasErrors: "exclamationmark.triangle"
-        case .running: "record.circle"
-        }
-    }
+    private var outcomeSymbol: String { summary.outcome.symbolName }
 
     private var outcomeColor: Color {
         switch summary.outcome {
-        case .completed: .secondary
+        case .completed, .ended: .secondary
         case .hasErrors: .red
         case .running: .accentColor
         }

@@ -34,6 +34,15 @@ struct TimelineFilter: Equatable, Sendable {
             || !filePathQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || dateRange != .all
     }
 
+    /// Clears only the category and step-type filters that would hide `step`; search, file, and date filters stay.
+    func revealing(_ step: StepRecord) -> TimelineFilter {
+        guard !matches(step) else { return self }
+        var revealed = self
+        revealed.kindRawValue = "all"
+        revealed.preset = .all
+        return revealed
+    }
+
     /// Returns whether a normalized step satisfies every active filter.
     func matches(_ step: StepRecord) -> Bool {
         if !preset.matches(step) { return false }

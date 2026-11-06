@@ -109,9 +109,8 @@ struct TimelineView: View {
     private func navigateError(_ direction: TimelineErrorIndex.Direction, index: TimelineErrorIndex, orderedSteps: [StepRecord]) {
         guard let destination = index.destination(from: selectedStepID, direction: direction) else { return }
         // Keep the destination visible when the step-type picker excludes it.
-        if let step = orderedSteps.first(where: { $0.id == destination }), !filter.matches(step) {
-            filter.kindRawValue = "all"
-            filter.preset = .all
+        if let step = orderedSteps.first(where: { $0.id == destination }) {
+            filter = filter.revealing(step)
         }
         selectStep(destination)
     }
@@ -122,14 +121,7 @@ struct TimelineView: View {
     }
 
     private func ensureSelection() {
-        guard let firstStep = matchingSteps.first else {
-            selectedStepID = nil
-            return
-        }
-        guard matchingSteps.contains(where: { $0.id == selectedStepID }) else {
-            selectedStepID = firstStep.id
-            return
-        }
+        selectedStepID = TimelineSelection.reconciled(current: selectedStepID, matchingIDs: matchingSteps.map(\.id))
     }
 }
 

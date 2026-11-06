@@ -3,6 +3,8 @@ import Observation
 
 /// Transient snapshots for the dashboard's fetch-limited page. Reconciliation
 /// explicitly invalidates changed sessions, including edits with unchanged mtime.
+/// A changed or invalidated entry keeps serving its previous summary until the
+/// rebuild lands, so live sessions never fall back to a placeholder.
 @MainActor
 @Observable
 final class SessionSummaryCache {
@@ -28,6 +30,7 @@ final class SessionSummaryCache {
     private struct Entry {
         let stamp: Stamp
         let summary: SessionSummary
+        var isDirty = false
     }
 
     private var entries: [UUID: Entry] = [:]
@@ -47,7 +50,7 @@ final class SessionSummaryCache {
     }
 
     func invalidate(_ id: UUID) {
-        entries.removeValue(forKey: id)
+        entries[id]?.isDirty = true
         revision &+= 1
     }
 
@@ -59,20 +62,25 @@ final class SessionSummaryCache {
         for session in sessions {
             guard !Task.isCancelled else { return }
             let stamp = Stamp(session)
-            if entries[session.id]?.stamp != stamp {
-                entries[session.id] = Entry(stamp: stamp, summary: summarize(session))
-                await Task.yield()
-            }
+            if let entry = entries[session.id], entry.stamp == stamp, !entry.isDirty { continue }
+            entries[session.id] = Entry(stamp: stamp, summary: summarize(session))
+            await Task.yield()
         }
     }
 
+    /// Whether the stored summary reflects the session's current stamp and has not been invalidated.
+    func isCurrent(_ session: SessionRecord) -> Bool {
+        guard let entry = entries[session.id] else { return false }
+        return entry.stamp == Stamp(session) && !entry.isDirty
+    }
+
+    /// Nil only before the first summary exists; afterwards possibly stale, never a placeholder.
     func summary(for session: SessionRecord, now: Date) -> SessionSummary? {
-        guard let entry = entries[session.id], entry.stamp == Stamp(session) else { return nil }
-        return entry.summary.updatingLiveness(session: session, now: now)
+        entries[session.id]?.summary.updatingLiveness(session: session, now: now)
     }
 
     func needsAttention(in sessions: [SessionRecord]) -> Int? {
-        guard sessions.allSatisfy({ entries[$0.id]?.stamp == Stamp($0) }) else { return nil }
+        guard sessions.allSatisfy({ entries[$0.id] != nil }) else { return nil }
         return sessions.filter { entries[$0.id]?.summary.errorCount ?? 0 > 0 }.count
     }
 }
