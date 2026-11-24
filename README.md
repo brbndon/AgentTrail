@@ -1,32 +1,15 @@
 # AgentTrail
 
-AgentTrail is a local macOS viewer for understanding what coding agents did inside a project. The current app is intentionally Codex-first: it reads Codex JSONL session history from `~/.codex/sessions`, normalizes useful conversation and tool events, and keeps all imported data on the Mac.
+A local macOS app for browsing Codex coding-agent sessions.
 
-## Current experience
+## What it does
 
-- Loads the 30 most recently updated Codex threads on launch.
-- Loads threads newest-first by source modification time; the selected sort controls their display order.
-- Loads older history in explicit pages of up to 30 threads; the button shows how many older sessions remain in the next page.
-- Searches the loaded sessions, with a clear recovery action when search or filters match nothing.
-- Shows the active sort (last updated, date started, title, or event count, in either direction) and lets you list sessions flat or grouped by project. Sorting applies to the loaded sessions.
-- Offers two layouts in Settings: **Classic** (session list and timeline) and **Dashboard** (a full-window grid of session cards with a Live now strip). Classic shows the same dashboard grid whenever no session is selected, and the app opens on it.
-- Opens sessions with a collapsible request/result summary and a turn-based timeline; switch to **All events** for the flat list, or **Technical** for inline commands, step numbers, tokens, and original JSON. Simple/Technical preference persists locally.
-- Filters events by category, search, file, and date. Use **⌘[ / ⌘]** to navigate errors across step types, and **⌥⌘← / ⌥⌘→** to inspect adjacent matching events.
-- Previews recorded file diffs on demand. Unsupported or missing diffs are labeled unavailable; previews are limited to 128,000 characters or 2,000 lines and original JSON reads to 4 MB (the payload store retains its existing 64 MB integrity-read ceiling).
-- Shows outcomes, durations, file/error counts, and final replies on dashboard cards. **Needs attention** counts loaded, matching sessions with recorded errors; transient summaries are cached and rebuilt after import changes without altering the library schema.
-- Groups each globally newest-first page by project and shows total imported thread counts without loading full session histories.
-- Uses Codex `session_meta` and `turn_context` records to identify the workspace.
-- Uses canonical `user_message` and `agent_message` records (event messages or completed items) for clean task titles and conversation steps, without repeating matching mirrored response messages. Unmatched messages are retained.
-- Links tool results back to their call IDs (including across incremental refreshes) so commands, tool names, failures, and exit codes are easier to diagnose.
-- Normalizes direct and nested Codex command, patch, file-change, and MCP completion records into concise semantic steps.
-- Stores normalized metadata in SwiftData and raw event payloads in private local files.
-- Loads raw payload previews only when their inspector disclosure is expanded.
-- Persists private, derived Codex checkpoints so growing active sessions resume at the last complete JSONL record.
-- Watches `~/.codex/sessions` for active-session updates.
-- Shows a menu bar extra for Codex sessions whose history files were written in the last three minutes.
-- Holds an exclusive lease on the shared Application Support library so installed, disk-image, and Xcode builds cannot import into it concurrently.
+- Reads Codex session files from `~/.codex/sessions` and keeps imported data on this Mac.
+- Search, filter, sort, and group sessions by project.
+- Review conversation turns, tool calls, errors, commands, and recorded file changes.
+- See active Codex sessions in the app and menu bar.
 
-Grok Build and Cursor parsers still exist in the source tree, but the shipping workflow does not scan them while their formats and UX are being stabilized.
+The shipping import currently supports Codex. Cursor and Grok Build parsers are present in the source but are not enabled in the app.
 
 ## Requirements
 
@@ -34,42 +17,14 @@ Grok Build and Cursor parsers still exist in the source tree, but the shipping w
 - Xcode 16 or newer
 - Swift 6
 
-## Development
+## Build and test
 
-Open `AgentTrail.xcodeproj`, select the **AgentTrail** scheme and **My Mac**, then run the app. The checked-in Xcode project is generated from `project.yml`; use XcodeGen when changing target or file membership configuration.
+Open `AgentTrail.xcodeproj`, select the **AgentTrail** scheme and **My Mac**, then run the app. The project configuration is in `project.yml`; use XcodeGen only when changing project or target configuration.
 
-Run the `AgentTrailTests` target before distributing a build. Sanitized compatibility fixtures live under `AgentTrailTests/Fixtures/Codex`; tests copy them into temporary directories and never read or modify the real Codex history.
+Run the `AgentTrailTests` target in Xcode. Tests use sanitized fixtures and do not read or modify your real Codex history.
 
-## Data and privacy
+## Privacy
 
-AgentTrail does not use a network service. It reads local session files and writes its library under:
+AgentTrail does not use a network service. It reads local session files and stores its library under `~/Library/Application Support/AgentTrail/`.
 
-```text
-~/Library/Application Support/AgentTrail/
-```
-
-Raw payload previews can include prompts, command output, and file paths from the original session. Treat exported screenshots or copied payloads as potentially sensitive.
-
-Conversation checkpoints retain candidate records so deduplication is consistent across incremental appends. Parser changes invalidate this derived cache and reimport loaded pages from the original JSONL; source logs and local branches are preserved.
-
-The `Checkpoints` subfolder contains normalized copies of imported session data and is protected with owner-only permissions. It is derived cache state, not a second source of truth; incompatible or invalid checkpoints are ignored and rebuilt from the read-only Codex session file.
-
-Installed, disk-image, and Xcode development copies use this same library. Launch Services prevents ordinary duplicate launches; if another copy still starts (for example, an older build or an explicit development launch), the newer copy stays read-only, explains the conflict, and offers to bring the owning copy forward. Quit the owning copy before switching builds; AgentTrail never resets the library to resolve an ownership conflict.
-
-## How Codex import works
-
-1. Enumerate regular, non-symlink `.jsonl` files under `~/.codex/sessions`.
-2. Sort them by modification date, newest first.
-3. Import only the currently requested page count (30, 60, 90, and so on).
-4. Skip unchanged files. For a growing file, validate its device/inode and prefix digests, then resume at the last complete record.
-5. Reset the derived checkpoint after truncation, replacement, or prefix changes; defer malformed trailing partial records until they are complete.
-6. Prefer `session_meta` for the session start time and workspace path.
-7. Prefer canonical Codex conversation events and suppress duplicated injected context messages.
-8. Preserve each selected raw JSONL record in the local payload store for detailed inspection.
-
-Malformed complete records degrade one session instead of blocking the whole library. A partial trailing record is left uncheckpointed until a later append completes it. A file that changes during its two-pass read is retried on a later refresh rather than being saved as a mixed snapshot.
-
-## Near-term roadmap
-
-- Add opt-in export with automatic secret and home-path redaction.
-- Re-enable Grok Build and Cursor only after their pagination, metadata, and regression coverage match the Codex path.
+Session history can contain prompts, command output, and file paths. Treat raw payload previews, copied content, and screenshots as sensitive.
